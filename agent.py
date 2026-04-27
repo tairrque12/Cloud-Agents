@@ -117,16 +117,31 @@ writer = Agent(
 
 # Task 1 — Research task assigned to Researcher
 research_task = Task(
-    description="""Search the web and find 3 specific, current ways that small 
-    businesses are benefiting from AI agents in 2026. Focus on real examples 
-    with measurable results. Every bullet point must cite a real source or 
-    statistic. Do not include anything you cannot verify through search.""",
+    description="""Search the web and find 3 specific, current, 
+    verifiable facts about: {topic}
+
+    Search requirements:
+    - Run at least 2 different searches with different query angles
+    - Prioritize sources from 2025 and 2026 only
+    - Prioritize primary sources over blog posts and listicles
+    - If the topic is educational, find real expert quotes or 
+      course curriculum data — not opinions
+    - If the topic is data-driven, find real statistics with 
+      sources and timeframes
+    - If first search returns only listicles, search again with 
+      more specific terms
+
+    Every bullet point must:
+    - Cite a specific source by name
+    - Include a date or timeframe
+    - Contain a concrete fact, statistic, or verified example
+    - Not be an opinion or general advice""",
     expected_output="""Exactly 3 bullet points. Each bullet point must:
     - Be a complete sentence
-    - Reference a real source, statistic, or verifiable example
-    - Include a timeframe for any statistic cited
-    - Stand alone without requiring the reader to reference other bullets
-    - Contain at least one concrete real-world example across the three points""",
+    - Reference a real named source with date
+    - Contain a specific number, statistic, or named example
+    - Stand alone without requiring context from other bullets
+    - Be something a skeptical reader could verify independently""",
     agent=researcher
 )
 
@@ -160,6 +175,17 @@ crew = Crew(
 )
 
 # Run the crew
-result = crew.kickoff()
+# Accept dynamic input
+import sys
+
+if len(sys.argv) > 1:
+    topic = " ".join(sys.argv[1:])
+else:
+    topic = "3 specific ways small businesses benefit from AI agents in 2026"
+
+print(f"\nResearching: {topic}\n")
+
+# Run the crew with dynamic topic
+result = crew.kickoff(inputs={"topic": topic})
 print("\n--- FINAL OUTPUT ---")
 print(result)
