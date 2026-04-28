@@ -30,7 +30,7 @@ researcher = Agent(
     - Return exactly the number of bullet points requested — no more, no less
     - Every bullet point must reference a real source, statistic, or verifiable example
     - Each bullet point must cite a DIFFERENT source — never cite the same source 
-      twice across multiple bullet points as if they are independent findings
+      twice across multiple bullet points under any circumstances
     - Each bullet point must stand alone — a reader should understand it without 
       reading the others
     - Include at least one concrete real-world example per output — not just concepts
@@ -41,12 +41,20 @@ researcher = Agent(
     24 months as current unless explicitly asked. You never make recommendations — 
     you only report findings. You never use phrases like I think or I believe — 
     every statement is sourced. You never combine multiple topics in one bullet point.
-    You never cite the same source in more than one bullet point.
+    You never cite the same source in more than one bullet point — ever.
 
     When your search returns zero relevant results after two attempts, you report 
     this clearly rather than guessing. When results are contradictory, you present 
     both sides and note the conflict. When a task is too vague to research accurately, 
     you state what additional information is needed before proceeding.
+
+    MANDATORY SOURCE AUDIT — you must complete this before submitting any final answer:
+    Step 1: List the source for each bullet point explicitly
+    Step 2: Confirm every source is completely different from the others
+    Step 3: If any two bullets share the same source — discard one immediately 
+            and search again using a different query before resubmitting
+    Step 4: Only submit your final answer after confirming all sources are unique
+    You are not permitted to skip this audit under any circumstances.
 
     When handing off to the Analyst agent, your bullet points are complete sentences 
     with enough context that the Analyst can evaluate them immediately. Source 
@@ -176,20 +184,36 @@ research_task = Task(
     - If first search returns only listicles, search again with 
       more specific terms
     - Each bullet point must cite a DIFFERENT source —
-      never use the same source twice
+      never use the same source twice under any circumstances
 
     Every bullet point must:
-    - Cite a specific named source different from the other bullets
+    - Cite a specific named source different from all other bullets
     - Include a date or timeframe
     - Contain a concrete fact, statistic, or verified example
-    - Not be an opinion or general advice""",
-    expected_output="""Exactly 3 bullet points. Each bullet point must:
+    - Not be an opinion or general advice
+
+    MANDATORY SOURCE AUDIT before submitting:
+    - Bullet 1 source: [state the source name here]
+    - Bullet 2 source: [state the source name here]
+    - Bullet 3 source: [state the source name here]
+    - All three sources are different: [confirm yes or search again]
+    - Do not submit until all three sources are confirmed unique""",
+    expected_output="""Exactly 3 bullet points followed by a source audit.
+
+    Each bullet point must:
     - Be a complete sentence
     - Reference a real named source with date — 
-      each bullet must cite a different source
+      each bullet must cite a completely different source
     - Contain a specific number, statistic, or named example
     - Stand alone without requiring context from other bullets
-    - Be something a skeptical reader could verify independently""",
+    - Be something a skeptical reader could verify independently
+
+    Followed by:
+    Source audit:
+    - Bullet 1 source: [named]
+    - Bullet 2 source: [named]
+    - Bullet 3 source: [named]
+    - Confirmed all unique: yes""",
     agent=researcher
 )
 
@@ -207,6 +231,9 @@ analyst_task = Task(
     7. All three bullet points cite different sources — if two or more 
        bullets cite the same source as independent findings this is an 
        automatic rejection regardless of how good the content is
+
+    Also verify the Researcher completed the mandatory source audit.
+    If the source audit is missing — reject immediately.
 
     If ALL seven criteria are met across ALL bullet points:
     - Output APPROVED
