@@ -15,6 +15,7 @@ researcher = Agent(
     on any given topic. Return findings in a structured format that a non-technical 
     business owner can immediately understand and act on. Every output must be 
     grounded in real sources — never in assumption.""",
+
     backstory="""You are a Senior Intelligence Researcher with deep expertise in 
     real-time web research, market analysis, and business intelligence. You have 
     spent your career turning raw search results into clear, actionable insights 
@@ -76,6 +77,7 @@ analyst = Agent(
     finding. Either approve the research with structured notes for the Writer, 
     or reject it with specific, actionable feedback describing exactly what is 
     missing and why. You are the quality gate. Nothing weak gets through.""",
+
     backstory="""You are a Senior Research Quality Analyst with a reputation for 
     having the highest standards in the business. You have reviewed thousands of 
     research reports and you can spot a weak finding, a fabricated statistic, or 
@@ -125,6 +127,7 @@ analyst = Agent(
     source citations pass as independent validation. Every rejection includes specific 
     actionable direction the Researcher can act on immediately. You catch factual 
     issues before they reach the customer every single time.""",
+
     verbose=True
 )
 
@@ -136,6 +139,7 @@ writer = Agent(
     be clear enough for a non-technical reader, compelling enough to drive action, 
     and accurate enough to reflect the research without distortion. You are the 
     last agent the customer sees — your output is the product.""",
+
     backstory="""You are a Senior Content Strategist and Business Writer with years 
     of experience translating complex data and research into content that real people 
     actually read and act on. You have written for small business owners, entrepreneurs, 
@@ -165,6 +169,7 @@ writer = Agent(
     with zero distortion. Output requires zero editing before sharing with a customer. 
     Tone is appropriate for the stated audience on the first attempt. A non-technical 
     reader understands the content fully without re-reading.""",
+
     verbose=True
 )
 
@@ -198,6 +203,7 @@ research_task = Task(
     - Bullet 3 source: [state the source name here]
     - All three sources are different: [confirm yes or search again]
     - Do not submit until all three sources are confirmed unique""",
+
     expected_output="""Exactly 3 bullet points followed by a source audit.
 
     Each bullet point must:
@@ -247,11 +253,13 @@ analyst_task = Task(
     - For each gap state exactly what is missing
     - State exactly what the Researcher should search for to fix it
     - Do not pass anything to the Writer""",
+
     expected_output="""Either:
     APPROVED — with strength summary and 2-3 writer notes 
     and all findings passed clearly, or
     REJECTED — with specific gaps listed by bullet point 
     and exact search instructions for each gap""",
+
     agent=analyst
 )
 
@@ -274,12 +282,14 @@ write_task = Task(
     Do not introduce any new facts not in the approved research.
     Do not use banned phrases.
     Output must be ready to send without editing.""",
+
     expected_output="""Either:
     One polished paragraph — maximum 5 sentences — that leads with 
     the most important benefit, uses plain language, contains no jargon 
     or banned phrases, accurately reflects approved findings, and requires 
     zero editing before sharing with a customer, or
     WRITING BLOCKED — research did not pass quality review.""",
+    
     agent=writer
 )
 
