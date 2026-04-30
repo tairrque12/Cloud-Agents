@@ -1,7 +1,7 @@
 # api/main.py
 # Inkbook — FastAPI Backend
 # Configured for: Miguel
-# Last updated: April 29, 2026
+# Last updated: April 30, 2026
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,13 +95,31 @@ def parse_crew_output(result: str) -> tuple:
 
 def detect_classification(result: str) -> str:
     """
-    Detects STRONG or SOFT classification
-    from crew output using word boundary matching.
-    Prevents false matches on words containing STRONG.
+    Detects STRONG or SOFT classification from crew output.
+    Searches the entire output string for classification signals.
+    STRONG takes priority if both appear — classifier always
+    outputs STRONG first before any other content.
     """
-    if re.search(r'\bSTRONG\b', result):
+    result_upper = result.upper()
+
+    strong_present = "STRONG" in result_upper
+    soft_present = "SOFT" in result_upper
+
+    if strong_present and not soft_present:
         return "STRONG"
-    return "SOFT"
+    elif strong_present and soft_present:
+        # Both present — whichever appears first wins
+        # Classifier outputs the header before anything else
+        if result_upper.index("STRONG") < result_upper.index("SOFT"):
+            return "STRONG"
+        else:
+            return "SOFT"
+    elif soft_present:
+        return "SOFT"
+    else:
+        # Neither found — default to SOFT to be safe
+        # Miguel should review anything unclear
+        return "SOFT"
 
 
 # ─────────────────────────────────────────
@@ -160,8 +178,6 @@ async def intake(request: IntakeRequest):
         client_message, session_summary = parse_crew_output(result)
 
         # Send Miguel his full card via Telegram
-        # Miguel sees: classification, client message,
-        # session summary, intake ID, approve/adjust/decline
         notify_miguel(
             classification=classification,
             client_name=request.client_name,
