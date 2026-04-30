@@ -17,8 +17,6 @@ load_dotenv()
 
 # ─────────────────────────────────────────
 # MIGUEL'S VOICE EXAMPLES
-# Pulled directly from real DM conversations
-# Used to train the Response Agent's tone
 # ─────────────────────────────────────────
 
 MIGUEL_VOICE_EXAMPLES = """
@@ -59,7 +57,6 @@ Example 5 — His standard intake questions:
 
 # ─────────────────────────────────────────
 # MIGUEL'S RATE STRUCTURE
-# Source of truth for pricing agent
 # ─────────────────────────────────────────
 
 MIGUEL_RATES = """
@@ -244,8 +241,8 @@ scheduling_agent = Agent(
     For MVP you work from a manually maintained availability
     configuration. Google Calendar integration is coming.
     Always note this in your output with:
-    "Availability based on manually maintained schedule.
-    Google Calendar integration coming soon."
+    Availability based on manually maintained schedule.
+    Google Calendar integration coming soon.
 
     Your output always contains exactly three date options
     formatted as day of week and date only, a day capacity
@@ -287,7 +284,7 @@ response_agent = Agent(
     Genuinely helpful — always gives a real answer or asks
       the specific question needed to get to the real answer
     Conversational — short paragraphs, line breaks between thoughts
-    Professional without being stiff — serious business, 
+    Professional without being stiff — serious business,
       approachable person
     Zero corporate language — ever
 
@@ -309,8 +306,8 @@ response_agent = Agent(
 
     The mandatory disclaimer must appear in every strong client
     message but written naturally as Miguel would say it:
-    "That's an estimate though, I always look everything over
-    personally before locking in the final price."
+    That's an estimate though, I always look everything over
+    personally before locking in the final price.
     Not as a formal block of text.
 
     Session summary structure for Miguel:
@@ -325,12 +322,17 @@ response_agent = Agent(
     with a clear picture of what he is doing. Generic summaries
     are a failure condition for this agent.
 
+    You MUST format your output using these exact delimiters:
+    ---CLIENT MESSAGE---
+    [client facing message here]
+    ---SESSION SUMMARY---
+    [Miguel only summary here]
+
     You never write a message that sounds like a customer
     service department. You never use corporate phrases.
     You never skip the session summary.
-    You never fake specificity in the acknowledgment —
-    if the description was vague the soft client template
-    applies and you invite them to share more.""",
+    You never skip the delimiters — they are required.
+    You never fake specificity in the acknowledgment.""",
     verbose=True
 )
 
@@ -438,6 +440,13 @@ def create_intake_tasks(form_data: dict):
         description=f"""Produce two outputs using everything from
         the upstream agents.
 
+        You MUST use exactly this format with these exact delimiters:
+
+        ---CLIENT MESSAGE---
+        [the message that goes to the client]
+        ---SESSION SUMMARY---
+        [the summary that goes to Miguel only]
+
         OUTPUT 1 — CLIENT MESSAGE
         Write in Miguel's exact voice.
         Use the client's first name in the opener.
@@ -460,16 +469,15 @@ def create_intake_tasks(form_data: dict):
         Client's first name: {form_data.get('client_name', 'there')}
         Classification from Intake Classifier: use context
         Emotional tone note from Intake Classifier: use context""",
-        expected_output="""Two complete outputs:
+        expected_output="""Two outputs separated by exact delimiters:
 
-        CLIENT MESSAGE:
+        ---CLIENT MESSAGE---
         A complete message in Miguel's voice ready to send
         to the client word for word if he taps approve.
         Includes opener, acknowledgment of their concept,
         estimate with natural disclaimer, three dates presented
         naturally, deposit amount, and clear next step.
-
-        SESSION SUMMARY FOR MIGUEL:
+        ---SESSION SUMMARY---
         A plain language briefing covering the work details,
         session type and day capacity, complexity notes,
         and client assessment. Specific enough that Miguel
@@ -480,6 +488,7 @@ def create_intake_tasks(form_data: dict):
 
     return [classify_task, pricing_task,
             scheduling_task, response_task]
+
 
 # ─────────────────────────────────────────
 # CREW ASSEMBLY
@@ -517,7 +526,6 @@ def run_tattoo_intake_crew(form_data: dict) -> str:
 
 if __name__ == "__main__":
 
-    # Sample strong client submission
     strong_client = {
         "client_name": "Marcus",
         "contact": "+15125551234",
@@ -537,7 +545,6 @@ if __name__ == "__main__":
         "guided_discovery": None
     }
 
-    # Sample soft client submission
     soft_client = {
         "client_name": "Jordan",
         "contact": "jordan@email.com",
@@ -554,7 +561,6 @@ if __name__ == "__main__":
         "guided_discovery": None
     }
 
-    # Choose which to run
     test_submission = strong_client
 
     print(f"\n{'='*60}")

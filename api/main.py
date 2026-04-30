@@ -9,11 +9,14 @@ from pydantic import BaseModel
 from typing import Optional, List
 import sys
 import os
+import uuid
+import re
 
 # Add project root to path so crews and tools import correctly
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crews.tattoo_intake_crew import run_tattoo_intake_crew
+from tools.telegram_notifier import notify_miguel
 
 app = FastAPI(
     title="Inkbook API",
@@ -35,8 +38,6 @@ app.add_middleware(
 
 # ─────────────────────────────────────────
 # REQUEST MODELS
-# These define exactly what the chatbot
-# sends to this endpoint
 # ─────────────────────────────────────────
 
 class GuidedDiscovery(BaseModel):
@@ -47,24 +48,61 @@ class GuidedDiscovery(BaseModel):
 class IntakeRequest(BaseModel):
     client_name: str
     contact: str
-    size_selection: str          # small/medium/large/full_sleeve
+    size_selection: str
     description: str
     placement: str
     styles: Optional[List[str]] = []
     is_cover_up: bool = False
     cover_up_description: Optional[str] = None
-    budget_range: str            # under_200/200_500/500_1000/1000_plus
-    preferred_timing: str        # within_2_weeks/within_1_month/etc
+    budget_range: str
+    preferred_timing: str
     reference_image: Optional[str] = None
-    idea_readiness: str          # knows_exactly/needs_help
+    idea_readiness: str
     guided_discovery: Optional[GuidedDiscovery] = None
 
 class ApprovalRequest(BaseModel):
     intake_id: str
-    decision: str                # approved/adjusted/declined
+    decision: str
     adjusted_price: Optional[str] = None
     adjusted_dates: Optional[str] = None
     adjusted_message: Optional[str] = None
+
+# ─────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────
+
+def parse_crew_output(result: str) -> tuple:
+    """
+    Splits crew output into client message
+    and session summary using delimiters.
+    Client message goes to the client.
+    Session summary goes to Miguel only.
+    Neither audience sees the other's content.
+    """
+    if "---SESSION SUMMARY---" in result:
+        parts = result.split("---SESSION SUMMARY---")
+        client_message = parts[0].replace(
+            "---CLIENT MESSAGE---", ""
+        ).strip()
+        session_summary = parts[1].strip()
+    else:
+        # Fallback if agent did not use delimiters
+        client_message = result.strip()
+        session_summary = "Session summary not generated. Review full output manually."
+
+    return client_message, session_summary
+
+
+def detect_classification(result: str) -> str:
+    """
+    Detects STRONG or SOFT classification
+    from crew output using word boundary matching.
+    Prevents false matches on words containing STRONG.
+    """
+    if re.search(r'\bSTRONG\b', result):
+        return "STRONG"
+    return "SOFT"
+
 
 # ─────────────────────────────────────────
 # ROUTES
@@ -72,7 +110,6 @@ class ApprovalRequest(BaseModel):
 
 @app.get("/")
 def health_check():
-    """Health check — confirms API is running"""
     return {
         "status": "running",
         "product": "Inkbook",
@@ -80,17 +117,19 @@ def health_check():
         "version": "0.1.0"
     }
 
+
 @app.post("/api/miguel/intake")
 async def intake(request: IntakeRequest):
     """
     Main intake endpoint.
-    Receives chatbot form data from the React frontend.
-    Fires the four-agent CrewAI crew.
-    Returns the crew output for display and
-    sends Telegram notification to Miguel.
+    Receives chatbot data from React frontend.
+    Fires four-agent CrewAI crew.
+    Splits output — client message vs session summary.
+    Sends Miguel his full card via Telegram.
+    Returns only client message to frontend.
+    Session summary never leaves the server.
     """
     try:
-        # Convert request to dict for crew
         form_data = {
             "client_name": request.client_name,
             "contact": request.contact,
@@ -108,13 +147,37 @@ async def intake(request: IntakeRequest):
                 if request.guided_discovery else None
         }
 
+        # Generate unique intake ID
+        intake_id = str(uuid.uuid4())[:8].upper()
+
         # Fire the crew
         result = run_tattoo_intake_crew(form_data)
 
+        # Detect classification
+        classification = detect_classification(result)
+
+        # Split into client message and session summary
+        client_message, session_summary = parse_crew_output(result)
+
+        # Send Miguel his full card via Telegram
+        # Miguel sees: classification, client message,
+        # session summary, intake ID, approve/adjust/decline
+        notify_miguel(
+            classification=classification,
+            client_name=request.client_name,
+            client_contact=request.contact,
+            client_message=client_message,
+            session_summary=session_summary,
+            intake_id=intake_id
+        )
+
+        # Return only client-appropriate data to frontend
+        # Session summary never leaves the server
         return {
             "status": "success",
             "message": "Request submitted to Miguel for review",
-            "crew_output": result
+            "intake_id": intake_id,
+            "client_message": client_message
         }
 
     except Exception as e:
@@ -123,13 +186,13 @@ async def intake(request: IntakeRequest):
             detail=f"Crew execution failed: {str(e)}"
         )
 
+
 @app.post("/api/miguel/approve")
 async def approve(request: ApprovalRequest):
     """
     Approval endpoint.
     Called when Miguel taps approve, adjust,
     or decline on his Telegram notification.
-    Triggers client confirmation SMS.
     """
     try:
         if request.decision == "approved":
