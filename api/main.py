@@ -3,7 +3,7 @@
 # Configured for: Miguel
 # Last updated: April 30, 2026
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -16,7 +16,13 @@ import re
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crews.tattoo_intake_crew import run_tattoo_intake_crew
-from tools.telegram_notifier import notify_miguel
+from tools.telegram_notifier import (
+    notify_miguel,
+    send_telegram_message,
+    send_client_confirmation,
+    send_client_decline,
+    send_client_custom_message
+)
 
 app = FastAPI(
     title="Inkbook API",
@@ -25,12 +31,12 @@ app = FastAPI(
 )
 
 # ─────────────────────────────────────────
-# CORS — allows React frontend to call this
+# CORS
 # ─────────────────────────────────────────
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,6 +74,14 @@ class ApprovalRequest(BaseModel):
     adjusted_message: Optional[str] = None
 
 # ─────────────────────────────────────────
+# IN-MEMORY INTAKE STORE
+# Temporary for MVP — replace with DB later
+# ─────────────────────────────────────────
+
+intake_store = {}
+miguel_last_intake_id = {}
+
+# ─────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────
 
@@ -75,9 +89,6 @@ def parse_crew_output(result: str) -> tuple:
     """
     Splits crew output into client message
     and session summary using delimiters.
-    Client message goes to the client.
-    Session summary goes to Miguel only.
-    Neither audience sees the other's content.
     """
     if "---SESSION SUMMARY---" in result:
         parts = result.split("---SESSION SUMMARY---")
@@ -86,7 +97,6 @@ def parse_crew_output(result: str) -> tuple:
         ).strip()
         session_summary = parts[1].strip()
     else:
-        # Fallback if agent did not use delimiters
         client_message = result.strip()
         session_summary = "Session summary not generated. Review full output manually."
 
@@ -96,9 +106,7 @@ def parse_crew_output(result: str) -> tuple:
 def detect_classification(result: str) -> str:
     """
     Detects STRONG or SOFT classification from crew output.
-    Searches the entire output string for classification signals.
-    STRONG takes priority if both appear — classifier always
-    outputs STRONG first before any other content.
+    STRONG takes priority if both appear and STRONG comes first.
     """
     result_upper = result.upper()
 
@@ -108,8 +116,6 @@ def detect_classification(result: str) -> str:
     if strong_present and not soft_present:
         return "STRONG"
     elif strong_present and soft_present:
-        # Both present — whichever appears first wins
-        # Classifier outputs the header before anything else
         if result_upper.index("STRONG") < result_upper.index("SOFT"):
             return "STRONG"
         else:
@@ -117,8 +123,6 @@ def detect_classification(result: str) -> str:
     elif soft_present:
         return "SOFT"
     else:
-        # Neither found — default to SOFT to be safe
-        # Miguel should review anything unclear
         return "SOFT"
 
 
@@ -145,7 +149,6 @@ async def intake(request: IntakeRequest):
     Splits output — client message vs session summary.
     Sends Miguel his full card via Telegram.
     Returns only client message to frontend.
-    Session summary never leaves the server.
     """
     try:
         form_data = {
@@ -187,8 +190,19 @@ async def intake(request: IntakeRequest):
             intake_id=intake_id
         )
 
-        # Return only client-appropriate data to frontend
-        # Session summary never leaves the server
+        # Store intake for webhook approval flow
+        intake_store[intake_id] = {
+            "client_name": request.client_name,
+            "client_contact": request.contact,
+            "client_message": client_message,
+            "intake_id": intake_id,
+            "status": "pending"
+        }
+
+        # Track Miguel's most recent intake ID
+        miguel_last_intake_id["current"] = intake_id
+
+        # Return only client-appropriate data
         return {
             "status": "success",
             "message": "Request submitted to Miguel for review",
@@ -206,15 +220,11 @@ async def intake(request: IntakeRequest):
 @app.post("/api/miguel/approve")
 async def approve(request: ApprovalRequest):
     """
-    Approval endpoint.
-    Called when Miguel taps approve, adjust,
-    or decline on his Telegram notification.
+    Manual approval endpoint.
+    Backup to the Telegram webhook flow.
     """
     try:
         if request.decision == "approved":
-            # TODO: send SMS confirmation to client
-            # TODO: send Stripe deposit link
-            # TODO: update database record
             return {
                 "status": "success",
                 "decision": "approved",
@@ -223,8 +233,6 @@ async def approve(request: ApprovalRequest):
             }
 
         elif request.decision == "adjusted":
-            # TODO: send adjusted confirmation to client
-            # TODO: update database record
             return {
                 "status": "success",
                 "decision": "adjusted",
@@ -238,8 +246,6 @@ async def approve(request: ApprovalRequest):
             }
 
         elif request.decision == "declined":
-            # TODO: send polite decline to client
-            # TODO: update database record
             return {
                 "status": "success",
                 "decision": "declined",
@@ -260,3 +266,85 @@ async def approve(request: ApprovalRequest):
             status_code=500,
             detail=f"Approval processing failed: {str(e)}"
         )
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """
+    Telegram webhook endpoint.
+    Telegram calls this every time Miguel
+    sends a message to the Inkbook bot.
+    Reads his reply and takes the right action.
+    """
+    try:
+        body = await request.json()
+
+        # Extract message from Telegram payload
+        message = body.get("message", {})
+        text = message.get("text", "").strip().upper()
+        chat_id = str(message.get("chat", {}).get("id", ""))
+
+        # Verify this message is from Miguel
+        if chat_id != os.getenv("MIGUEL_CHAT_ID"):
+            return {"status": "ignored"}
+
+        # Get the most recent intake ID
+        intake_id = miguel_last_intake_id.get("current")
+
+        if not intake_id or intake_id not in intake_store:
+            send_telegram_message(
+                "No active intake found. "
+                "A new booking request needs to come in first."
+            )
+            return {"status": "no_active_intake"}
+
+        intake = intake_store[intake_id]
+
+        if "APPROVE" in text or "✅" in text:
+            send_client_confirmation(
+                client_contact=intake["client_contact"],
+                client_name=intake["client_name"],
+                client_message=intake["client_message"],
+                intake_id=intake_id
+            )
+            intake_store[intake_id]["status"] = "approved"
+            send_telegram_message(
+                f"✅ Confirmed. Message sent to {intake['client_name']}."
+            )
+
+        elif "DECLINE" in text or "❌" in text:
+            send_client_decline(
+                client_contact=intake["client_contact"],
+                client_name=intake["client_name"]
+            )
+            intake_store[intake_id]["status"] = "declined"
+            send_telegram_message(
+                f"❌ Decline sent to {intake['client_name']}."
+            )
+
+        elif "ADJUST" in text or "✏️" in text:
+            send_telegram_message(
+                f"✏️ What would you like to change for {intake['client_name']}?\n\n"
+                f"Type your updated message and I will send it to them."
+            )
+            intake_store[intake_id]["status"] = "adjusting"
+
+        else:
+            # Check if Miguel is in adjust mode
+            if intake_store[intake_id].get("status") == "adjusting":
+                send_client_custom_message(
+                    client_contact=intake["client_contact"],
+                    client_name=intake["client_name"],
+                    custom_message=message.get("text", "")
+                )
+                intake_store[intake_id]["status"] = "approved"
+                send_telegram_message(
+                    f"✅ Your updated message was sent to "
+                    f"{intake['client_name']}."
+                )
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        print(f"Webhook error: {str(e)}")
+        return {"status": "error", "detail": str(e)}
