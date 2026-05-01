@@ -130,7 +130,7 @@ export default function ChatWindow({ onComplete }: Props) {
     setTimeout(() => addAssistantMessage('💰 Preparing your estimate… ✓'), 2000)
 
     try {
-      const res = await fetch('http://localhost:8000/api/miguel/intake', {
+      const res = await fetch('https://inkbook-4tlr.onrender.com/api/miguel/intake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
