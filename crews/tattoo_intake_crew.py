@@ -1,7 +1,7 @@
 # crews/tattoo_intake_crew.py
 # Inkbook — Tattoo Intake Crew
 # Configured for: Miguel
-# Last updated: April 29, 2026
+# Last updated: May 1, 2026
 
 from crewai import Agent, Task, Crew, Process
 from dotenv import load_dotenv
@@ -11,7 +11,6 @@ from tools.tattoo_pricing_tool import (
     classify_session_type
 )
 import json
-import sys
 
 load_dotenv()
 
@@ -75,66 +74,108 @@ Full Sleeve — 4-5 sessions — $800-1,000 per session
 
 intake_classifier = Agent(
     role="Tattoo Inquiry Intake Specialist for Miguel's booking system",
-    goal="""Read every client submission completely and make two
-    determinations. First — classify the client as STRONG or SOFT
-    based on budget alignment, description clarity, and intent signals.
-    Second — extract all relevant information cleanly for every
-    downstream agent. Every submission goes to Miguel regardless
-    of classification. Strong clients get a green header.
-    Soft clients get a yellow header. Miguel decides what to do
-    with both. Never filter anything out.""",
-    backstory=f"""You are the first agent to touch every form submission
-    that comes through MiguelInks. You have reviewed thousands of
-    tattoo booking inquiries and you can immediately tell the difference
-    between a client who is ready to book and one who is still exploring.
+    goal="""Read every client submission and make two completely
+    separate determinations in this exact order:
 
-    Your classification system is simple and consistent.
+    STEP 1 — CLASSIFY. Score the client using only four inputs.
+    Lock the classification before doing anything else.
 
-    A STRONG client has budget that aligns with their size selection,
-    a description clear enough to estimate, and signals of real intent
-    to book. They get a green header on Miguel's Telegram card.
+    STEP 2 — FLAG. Generate flags based on everything else.
+    Flags never change the classification. Ever.
 
-    A SOFT client has a budget that does not align with their size
-    selection, a vague description with no reference image, or is
-    clearly asking an informational question rather than trying to book.
-    They get a yellow header. Soft clients are not lost clients —
-    they need a different first response.
+    Every submission goes to Miguel regardless of classification.
+    Strong clients get a green header. Soft clients get a yellow
+    header. Miguel decides what to do with both.""",
+    backstory=f"""You are the intake classifier for Miguel's tattoo
+    booking system. Your job has two completely separate phases
+    that must never bleed into each other.
 
-    Budget alignment rules you apply to every submission:
-    Small — any budget is fine, no mismatch possible
-    Medium — $200+ budget aligns
-    Large — $500+ budget aligns with full day range of $800-1,000
-    Full Sleeve — $1,000+ budget aligns
+    ═══════════════════════════════════════
+    PHASE 1 — CLASSIFICATION (do this first, lock it, never revisit)
+    ═══════════════════════════════════════
 
-    The budget field is used exclusively for your classification.
-    You never pass it to the Pricing Agent.
-    The Pricing Agent determines price from size, description,
-    and placement only.
+    Classification is a pure scoring function.
+    You score exactly four inputs. Nothing else affects the score.
+    Flags, mismatches, and missing fields do NOT affect the score.
 
-    You extract and pass this structured data downstream:
+    THE FOUR INPUTS AND HOW TO SCORE THEM:
+
+    INPUT 1 — BUDGET ALIGNMENT (pass/fail)
+    Small size — any budget passes
+    Medium size — $200+ passes
+    Large size — $500+ passes
+    Full Sleeve size — $1,000+ passes
+    If budget aligns → BUDGET_PASS
+    If budget does not align → BUDGET_FAIL
+
+    INPUT 2 — DESCRIPTION CLARITY (pass/fail)
+    Does the description give enough detail to estimate?
+    A specific subject, style, or placement mentioned → DESCRIPTION_PASS
+    Completely vague like "something cool" or "not sure yet" → DESCRIPTION_FAIL
+
+    INPUT 3 — REFERENCE IMAGE (bonus, not required)
+    Image uploaded → IMAGE_PRESENT
+    No image → IMAGE_ABSENT
+    This input never causes a FAIL. It only adds confidence.
+
+    INPUT 4 — CONTACT PROVIDED (pass/fail)
+    Phone number or email present → CONTACT_PASS
+    Nothing provided → CONTACT_FAIL
+
+    CLASSIFICATION DECISION RULES:
+    STRONG — BUDGET_PASS + DESCRIPTION_PASS + CONTACT_PASS
+    SOFT — BUDGET_FAIL or DESCRIPTION_FAIL or CONTACT_FAIL
+
+    That is the entire classification system.
+    A client who scores STRONG is STRONG even if:
+    - Their placement is missing
+    - Their size and description do not match
+    - They have no reference image
+    - They have unusual timing requests
+    None of those things are classification inputs.
+    They are flags. Flags come in Phase 2.
+
+    Lock your classification after Phase 1.
+    Do not revisit it. Do not soften it. Do not change it.
+
+    ═══════════════════════════════════════
+    PHASE 2 — FLAGS (generate after classification is locked)
+    ═══════════════════════════════════════
+
+    After classification is locked, scan for flags.
+    Flags are informational signals for Miguel.
+    They never change what you already decided in Phase 1.
+
+    Flags you apply when relevant:
+    SIZE_DESCRIPTION_MISMATCH — selected size and described piece
+      do not match (e.g. selected Full Sleeve but described a leg piece)
+    COVER_UP_NEEDS_ASSESSMENT — always when is_cover_up is true
+    VAGUE_DESCRIPTION — description lacks detail but not so vague
+      it caused a DESCRIPTION_FAIL
+    BUDGET_BORDERLINE — budget is close to the threshold but passed
+    MISSING_CONTACT — contact is absent or malformed
+    MISSING_PLACEMENT — placement was not provided or is unclear
+    SOFT_PRICING_INQUIRY — submission is clearly just asking price
+    SOFT_AVAILABILITY_INQUIRY — submission is just asking availability
+    SOFT_SKIN_TONE_INQUIRY — Miguel's most common soft inquiry
+    GUIDED_DISCOVERY_VAGUE — needs_help selected but answers are vague
+
+    A STRONG client can have many flags.
+    A SOFT client can have zero flags.
+    Flags and classification are completely independent.
+
+    ═══════════════════════════════════════
+    PHASE 3 — EXTRACTION AND OUTPUT
+    ═══════════════════════════════════════
+
+    Extract and pass downstream:
     client name, contact, size selection, description, placement,
     styles, cover up status, cover up description if applicable,
-    reference image URL if uploaded, preferred timing, idea readiness,
+    reference image status, preferred timing, idea readiness,
     guided discovery answers if provided, your session type
     recommendation, confidence level, all flags, and a one sentence
     emotional tone note for the Response Agent.
 
-    Flags you apply when relevant:
-    SIZE_DESCRIPTION_MISMATCH — when what they selected and
-      what they described do not match
-    COVER_UP_NEEDS_ASSESSMENT — always when is_cover_up is true
-    VAGUE_DESCRIPTION — when description gives insufficient detail
-    BUDGET_BORDERLINE — when budget is close but not fully aligned
-    MISSING_CONTACT — when contact information is absent or malformed
-    MISSING_PLACEMENT — when placement was not provided
-    SOFT_PRICING_INQUIRY — when submission is clearly just asking price
-    SOFT_AVAILABILITY_INQUIRY — when submission is just asking availability
-    SOFT_SKIN_TONE_INQUIRY — Miguel's most common soft inquiry
-    GUIDED_DISCOVERY_VAGUE — when needs_help was selected but
-      guided answers are also vague
-
-    Every output includes the client header, extracted data,
-    classification metadata, and an emotional tone note.
     You never quote a price. You never check availability.
     You never draft the response. Those belong to other agents.""",
     verbose=True
@@ -349,21 +390,33 @@ def create_intake_tasks(form_data: dict):
         CLIENT SUBMISSION:
         {json.dumps(form_data, indent=2)}
 
-        Apply the full classification logic from your onboarding.
-        Extract all fields cleanly.
-        Apply all relevant flags.
-        Include the emotional tone note for the Response Agent.
-        Pass complete structured data downstream.
+        Follow the two-phase process from your onboarding exactly:
+
+        PHASE 1 — Score these four inputs only and lock classification:
+        1. Budget alignment against size selection
+        2. Description clarity
+        3. Contact provided
+        4. Reference image (bonus only, never causes FAIL)
+
+        Lock STRONG or SOFT before moving to Phase 2.
+        Do not revisit the classification after it is locked.
+
+        PHASE 2 — Generate flags after classification is locked.
+        Flags are informational only. They never change Phase 1.
+
+        PHASE 3 — Extract all fields and pass downstream.
 
         Remember: budget alignment is for classification only.
         Never pass the budget field to the Pricing Agent.
         Everything goes to Miguel — strong and soft both.""",
         expected_output="""Complete classification output containing:
         - Client header: STRONG or SOFT with one line reason
+          based only on the four scoring inputs
         - All extracted client data in structured format
         - Session type recommendation
         - Confidence level: HIGH / MEDIUM / LOW
         - All applicable flags as an array
+          (flags never affect the classification)
         - Emotional tone note for the Response Agent
         - Recommended next step context for downstream agents""",
         agent=intake_classifier
@@ -494,15 +547,35 @@ def create_intake_tasks(form_data: dict):
 # CREW ASSEMBLY
 # ─────────────────────────────────────────
 
-def run_tattoo_intake_crew(form_data: dict) -> str:
+def run_tattoo_intake_crew(form_data: dict) -> tuple:
     """
     Main entry point for the Inkbook intake crew.
     Accepts form data as a dictionary.
-    Returns the full crew output as a string.
-    This function is called by the FastAPI endpoint.
+
+    Returns a tuple: (result_string, classification)
+
+    - result_string: the full crew output as a string (response agent output)
+    - classification: "STRONG" or "SOFT" extracted directly from
+      tasks_output[0] — the classifier task output in isolation.
+
+    This is the correct architecture. str(crew_output) only returns
+    the final agent's output. Classification must be read from
+    tasks_output[0] which contains only the classifier's raw output,
+    with no other agent text mixed in.
+
+    The base64 image is stripped before passing to the crew.
+    The original form_data still has the full image for DB and Telegram.
     """
 
-    tasks = create_intake_tasks(form_data)
+    # Strip base64 image — agents don't need it, it wastes tokens
+    # The original form_data retains the full image for DB + Telegram
+    crew_data = {**form_data}
+    if crew_data.get("reference_image"):
+        crew_data["reference_image"] = "reference_image_uploaded"
+    else:
+        crew_data["reference_image"] = "no_reference_image"
+
+    tasks = create_intake_tasks(crew_data)
 
     crew = Crew(
         agents=[
@@ -516,8 +589,22 @@ def run_tattoo_intake_crew(form_data: dict) -> str:
         verbose=True
     )
 
-    result = crew.kickoff()
-    return str(result)
+    crew_output = crew.kickoff()
+
+    # ── Extract classification from classifier task output directly ──
+    # tasks_output[0] is the classifier's isolated output string.
+    # No other agent's text is present. This is the correct source.
+    # Fallback to SOFT if anything goes wrong.
+    classification = "SOFT"
+    try:
+        classifier_raw = str(crew_output.tasks_output[0]).upper()
+        if "STRONG" in classifier_raw:
+            classification = "STRONG"
+        print(f">>> Classification extracted from tasks_output[0]: {classification}")
+    except Exception as e:
+        print(f">>> Classification extraction failed, defaulting to SOFT: {e}")
+
+    return str(crew_output), classification
 
 
 # ─────────────────────────────────────────
@@ -568,9 +655,9 @@ if __name__ == "__main__":
     print(f"Testing with: {test_submission['client_name']}")
     print(f"{'='*60}\n")
 
-    result = run_tattoo_intake_crew(test_submission)
+    result, classification = run_tattoo_intake_crew(test_submission)
 
     print(f"\n{'='*60}")
-    print("FINAL CREW OUTPUT")
+    print(f"CLASSIFICATION: {classification}")
     print(f"{'='*60}")
     print(result)

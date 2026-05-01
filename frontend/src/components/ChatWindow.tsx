@@ -14,16 +14,17 @@ interface Props {
 }
 
 type Step =
-  | 'description' | 'size' | 'style' | 'coverup'
+  | 'description' | 'size' | 'placement' | 'style' | 'coverup'
   | 'reference' | 'budget' | 'timeline' | 'name' | 'contact' | 'processing'
 
 const STEP_SEQUENCE: Step[] = [
-  'description', 'size', 'style', 'coverup',
+  'description', 'size', 'placement', 'style', 'coverup',
   'reference', 'budget', 'timeline', 'name', 'contact', 'processing'
 ]
 
 const STEP_QUESTIONS: Partial<Record<Step, string>> = {
   size: 'That sounds clean. How big are you thinking?',
+  placement: 'Where on your body do you want this tattoo?',
   style: 'Got it — and what style are you drawn to?',
   coverup: 'Is this a cover up of an existing tattoo?',
   reference: "Upload a reference image below. A photo helps Miguel get a more accurate quote and makes sure he's fully prepared to execute your vision on tattoo day.",
@@ -35,6 +36,7 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
 
 const CHIPS: Partial<Record<Step, string[]>> = {
   size: ['Small', 'Medium', 'Large', 'Full Sleeve'],
+  placement: ['Full Sleeve', 'Forearm', 'Upper Arm', 'Chest', 'Back', 'Leg', 'Ribs', 'Hand', 'Neck', 'Other'],
   style: ['Realism', 'Traditional', 'Fine Line', 'Geometric', 'Blackwork', 'Not Sure'],
   coverup: ['Yes', 'No'],
   budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
@@ -136,7 +138,7 @@ export default function ChatWindow({ onComplete }: Props) {
           contact: finalAnswers.contact ?? '',
           description: finalAnswers.description ?? '',
           size_selection: finalAnswers.size?.toLowerCase() ?? '',
-          placement: 'not specified',
+          placement: finalAnswers.placement ?? 'not specified', // FIX: use actual answer
           styles: finalAnswers.style ? [finalAnswers.style.toLowerCase().replace(' ', '_')] : [],
           is_cover_up: finalAnswers.coverup === 'Yes',
           cover_up_description: null,
@@ -170,7 +172,7 @@ export default function ChatWindow({ onComplete }: Props) {
     }
   }
 
-  const showInput = ['description', 'name', 'contact'].includes(step)
+  const showInput = ['description', 'name', 'contact', 'placement'].includes(step)
 
   return (
     <div style={{
@@ -272,7 +274,7 @@ export default function ChatWindow({ onComplete }: Props) {
               </div>
             )}
 
-            {/* Upload zone — required */}
+            {/* Upload zone */}
             {msg.isUpload && step === 'reference' && !imageUploaded && (
               <div style={{ paddingLeft: '38px', marginTop: '10px' }}>
                 <input
@@ -350,6 +352,7 @@ export default function ChatWindow({ onComplete }: Props) {
             placeholder={
               step === 'name' ? 'Your name...' :
               step === 'contact' ? 'Your phone number...' :
+              step === 'placement' ? 'e.g. left forearm, right chest...' :
               'Describe your tattoo in as much detail as possible...'
             }
             style={{

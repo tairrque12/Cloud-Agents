@@ -1,7 +1,7 @@
 # api/main.py
 # Inkbook — FastAPI Backend
 # Configured for: Miguel
-# Last updated: April 30, 2026
+# Last updated: May 1, 2026
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,7 +51,6 @@ BUDGET_MAP = {
     "$200–$500": "200_500",
     "$500–$1,000": "500_1000",
     "$1,000+": "1000_plus",
-    # fallback passthrough for already-mapped values
     "under_200": "under_200",
     "200_500": "200_500",
     "500_1000": "500_1000",
@@ -63,7 +62,6 @@ TIMING_MAP = {
     "Within 1 month": "within_1_month",
     "Within 2 months": "within_2_months",
     "Flexible": "flexible",
-    # fallback passthrough
     "within_2_weeks": "within_2_weeks",
     "within_1_month": "within_1_month",
     "within_2_months": "within_2_months",
@@ -75,7 +73,6 @@ SIZE_MAP = {
     "Medium": "medium",
     "Large": "large",
     "Full Sleeve": "full_sleeve",
-    # fallback passthrough
     "small": "small",
     "medium": "medium",
     "large": "large",
@@ -136,22 +133,10 @@ def parse_crew_output(result: str) -> tuple:
     return client_message, session_summary
 
 
-def detect_classification(result: str) -> str:
-    result_upper = result.upper()
-    strong_present = "STRONG" in result_upper
-    soft_present = "SOFT" in result_upper
-
-    if strong_present and not soft_present:
-        return "STRONG"
-    elif strong_present and soft_present:
-        if result_upper.index("STRONG") < result_upper.index("SOFT"):
-            return "STRONG"
-        else:
-            return "SOFT"
-    elif soft_present:
-        return "SOFT"
-    else:
-        return "SOFT"
+# NOTE: detect_classification has been removed.
+# Classification is now extracted directly from crew_output.tasks_output[0]
+# inside run_tattoo_intake_crew in tattoo_intake_crew.py.
+# run_tattoo_intake_crew now returns a tuple: (result_string, classification)
 
 
 async def get_or_create_client(db: AsyncSession, name: str, contact: str) -> Client:
@@ -268,7 +253,6 @@ async def intake(
     db: AsyncSession = Depends(get_db)
 ):
     try:
-        # ── Map frontend values to DB constraint values ──
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
         timing_db = TIMING_MAP.get(request.preferred_timing, "flexible")
         size_db = SIZE_MAP.get(request.size_selection, "medium")
@@ -296,12 +280,16 @@ async def intake(
 
         short_id = str(uuid.uuid4())[:8].upper()
 
-        # ── Crew ──────────────────────────────
+        # ── Run crew ──────────────────────────
+        # run_tattoo_intake_crew returns a tuple:
+        # (result_string, classification)
+        # Classification comes from tasks_output[0] — the classifier
+        # agent's isolated output. This is the correct source of truth.
         print(">>> Firing crew...")
-        result = run_tattoo_intake_crew(form_data)
+        result, classification = run_tattoo_intake_crew(form_data)
         print(">>> Crew complete")
+        print(f">>> Classification: {classification}")
 
-        classification = detect_classification(result)
         client_message, session_summary = parse_crew_output(result)
 
         # ── Database ──────────────────────────
@@ -430,21 +418,20 @@ async def telegram_webhook(
                 intake_id=short_id
             )
 
-            async with get_db() as db_session:
-                await store_approval(
-                    db=db_session,
-                    intake_id=uuid.UUID(intake["intake_db_id"]),
-                    artist_id=uuid.UUID(intake["artist_db_id"]),
-                    decision="approved",
-                    client_message_sent=intake["client_message"]
-                )
-                result = await db_session.execute(
-                    select(Intake).where(Intake.short_id == short_id)
-                )
-                intake_record = result.scalar_one_or_none()
-                if intake_record:
-                    intake_record.status = "approved"
-                await db_session.commit()
+            await store_approval(
+                db=db,
+                intake_id=uuid.UUID(intake["intake_db_id"]),
+                artist_id=uuid.UUID(intake["artist_db_id"]),
+                decision="approved",
+                client_message_sent=intake["client_message"]
+            )
+            result = await db.execute(
+                select(Intake).where(Intake.short_id == short_id)
+            )
+            intake_record = result.scalar_one_or_none()
+            if intake_record:
+                intake_record.status = "approved"
+            await db.commit()
 
             intake_store[short_id]["status"] = "approved"
             send_telegram_message(f"✅ Confirmed. Message sent to {intake['client_name']}.")
@@ -455,21 +442,20 @@ async def telegram_webhook(
                 client_name=intake["client_name"]
             )
 
-            async with get_db() as db_session:
-                await store_approval(
-                    db=db_session,
-                    intake_id=uuid.UUID(intake["intake_db_id"]),
-                    artist_id=uuid.UUID(intake["artist_db_id"]),
-                    decision="declined",
-                    client_message_sent="Decline message sent."
-                )
-                result = await db_session.execute(
-                    select(Intake).where(Intake.short_id == short_id)
-                )
-                intake_record = result.scalar_one_or_none()
-                if intake_record:
-                    intake_record.status = "declined"
-                await db_session.commit()
+            await store_approval(
+                db=db,
+                intake_id=uuid.UUID(intake["intake_db_id"]),
+                artist_id=uuid.UUID(intake["artist_db_id"]),
+                decision="declined",
+                client_message_sent="Decline message sent."
+            )
+            result = await db.execute(
+                select(Intake).where(Intake.short_id == short_id)
+            )
+            intake_record = result.scalar_one_or_none()
+            if intake_record:
+                intake_record.status = "declined"
+            await db.commit()
 
             intake_store[short_id]["status"] = "declined"
             send_telegram_message(f"❌ Decline sent to {intake['client_name']}.")
@@ -490,22 +476,21 @@ async def telegram_webhook(
                     custom_message=custom_msg
                 )
 
-                async with get_db() as db_session:
-                    await store_approval(
-                        db=db_session,
-                        intake_id=uuid.UUID(intake["intake_db_id"]),
-                        artist_id=uuid.UUID(intake["artist_db_id"]),
-                        decision="adjusted",
-                        client_message_sent=custom_msg,
-                        adjusted_message=custom_msg
-                    )
-                    result = await db_session.execute(
-                        select(Intake).where(Intake.short_id == short_id)
-                    )
-                    intake_record = result.scalar_one_or_none()
-                    if intake_record:
-                        intake_record.status = "adjusted"
-                    await db_session.commit()
+                await store_approval(
+                    db=db,
+                    intake_id=uuid.UUID(intake["intake_db_id"]),
+                    artist_id=uuid.UUID(intake["artist_db_id"]),
+                    decision="adjusted",
+                    client_message_sent=custom_msg,
+                    adjusted_message=custom_msg
+                )
+                result = await db.execute(
+                    select(Intake).where(Intake.short_id == short_id)
+                )
+                intake_record = result.scalar_one_or_none()
+                if intake_record:
+                    intake_record.status = "adjusted"
+                await db.commit()
 
                 intake_store[short_id]["status"] = "approved"
                 send_telegram_message(
