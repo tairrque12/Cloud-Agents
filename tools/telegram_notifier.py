@@ -70,6 +70,7 @@ Reply with:
 # CORE SEND FUNCTION
 # Uses Telegram HTTP API directly
 # No async — works inside FastAPI cleanly
+# Splits messages over 4096 chars automatically
 # ─────────────────────────────────────────
 
 def send_telegram_message(
@@ -86,15 +87,21 @@ def send_telegram_message(
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    response = requests.post(url, json={
-        "chat_id": target_chat_id,
-        "text": message
-    })
+    # Telegram max message length is 4096 characters
+    # Split into chunks if needed
+    MAX_LENGTH = 4000
+    chunks = [message[i:i+MAX_LENGTH] for i in range(0, len(message), MAX_LENGTH)]
 
-    if not response.ok:
-        raise ValueError(f"Telegram API error: {response.text}")
+    for chunk in chunks:
+        response = requests.post(url, json={
+            "chat_id": target_chat_id,
+            "text": chunk
+        })
 
-    return response.json()
+        if not response.ok:
+            raise ValueError(f"Telegram API error: {response.text}")
+
+    return True
 
 
 # ─────────────────────────────────────────
@@ -109,12 +116,17 @@ def notify_miguel(
     session_summary: str,
     intake_id: str
 ):
+    # Truncate individual sections to keep card readable
+    # Full card with all fields stays under Telegram limits
+    client_message_trimmed = client_message[:1500] if len(client_message) > 1500 else client_message
+    session_summary_trimmed = session_summary[:1000] if len(session_summary) > 1000 else session_summary
+
     card = format_miguel_card(
         classification=classification,
         client_name=client_name,
         client_contact=client_contact,
-        client_message=client_message,
-        session_summary=session_summary,
+        client_message=client_message_trimmed,
+        session_summary=session_summary_trimmed,
         intake_id=intake_id
     )
 
