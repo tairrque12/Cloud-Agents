@@ -9,8 +9,8 @@ from tools.tattoo_pricing_tool import (
     calculate_tattoo_price,
     get_deposit_amount,
     classify_session_type
-    from tools.google_calendar_tool import get_available_dates
 )
+from tools.google_calendar_tool import get_available_dates
 import json
 
 load_dotenv()
