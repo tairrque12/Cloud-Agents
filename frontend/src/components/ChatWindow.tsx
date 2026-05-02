@@ -36,7 +36,7 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
 
 const CHIPS: Partial<Record<Step, string[]>> = {
   size: ['Small', 'Medium', 'Large', 'Full Sleeve'],
-  placement: ['Full Sleeve', 'Forearm', 'Upper Arm', 'Chest', 'Back', 'Leg', 'Ribs', 'Hand', 'Neck', 'Other'],
+  placement: ['Full Sleeve', 'Forearm', 'Upper Arm', 'Chest', 'Back', 'Leg', 'Torso', 'Hand', 'Neck', 'Other'],
   style: ['Realism', 'Traditional', 'Fine Line', 'Geometric', 'Blackwork', 'Not Sure'],
   coverup: ['Yes', 'No'],
   budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
@@ -47,8 +47,7 @@ export default function ChatWindow({ onComplete }: Props) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: 'Hey! What tattoo are you thinking about getting done? Be as detailed as possible — the more you share, the more accurate your estimate will be.',
-      stepKey: 'description'
+      content: 'Hi, my name is Miguel. I\'m a tattoo artist based in Austin, TX. I specialize in a variety of styles, with a focus on black and grey realism. I\'m experienced working with all skin tones and a wide range of subject matter. What are you interested in getting done?',
     }
   ])
   const [step, setStep] = useState<Step>('description')
