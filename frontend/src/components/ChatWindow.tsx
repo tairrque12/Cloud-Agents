@@ -151,7 +151,7 @@ export default function ChatWindow({ onComplete }: Props) {
       const data = await res.json()
       const message = data.client_message ?? ''
 
-      const priceMatch = message.match(/\$(\d{1,4})\s*(?:to|-)\s*\$(\d{1,4})/)
+      const priceMatch = message.match(/\$(\d{1,4})\s*(?:to|-)\s*\$?(\d{1,4})/)
       const priceMin = priceMatch ? parseInt(priceMatch[1]) : 800
       const priceMax = priceMatch ? parseInt(priceMatch[2]) : 1000
 
