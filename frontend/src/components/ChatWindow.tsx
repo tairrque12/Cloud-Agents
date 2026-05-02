@@ -1,3 +1,7 @@
+// src/components/ChatWindow.tsx
+// Inkbook — Chat intake flow
+// Updated: parses availableDates array and passes intakeId through onComplete
+
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
 
@@ -23,7 +27,7 @@ const STEP_SEQUENCE: Step[] = [
 ]
 
 const STEP_QUESTIONS: Partial<Record<Step, string>> = {
-  size: 'Let\'s Do It! How big are you thinking?',
+  size: "Let's Do It! How big are you thinking?",
   placement: 'Where on your body do you want this tattoo?',
   style: 'Got it — and what style are you drawn to?',
   coverup: 'Is this a cover up of an existing tattoo?',
@@ -43,11 +47,34 @@ const CHIPS: Partial<Record<Step, string[]>> = {
   timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
 }
 
+// ─── DATE PARSING ────────────────────────────────────────────────
+const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December']
+
+function parseAvailableDates(text: string): string[] {
+  const dates: string[] = []
+  const seen = new Set<string>()
+  const pattern = new RegExp(
+    `(${DAY_NAMES.join('|')})[,\\s·]+((${MONTH_NAMES.join('|')})\\s+\\d{1,2})`,
+    'g'
+  )
+  let match
+  while ((match = pattern.exec(text)) !== null) {
+    const formatted = `${match[1]} · ${match[2]}`
+    if (!seen.has(formatted)) {
+      seen.add(formatted)
+      dates.push(formatted)
+    }
+  }
+  return dates
+}
+
 export default function ChatWindow({ onComplete }: Props) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: 'Hi, my name is Miguel. I\'m a tattoo artist based in Austin, TX. I specialize in a variety of styles, with a focus on black and grey realism. I\'m experienced working with all skin tones and a wide range of subject matter. What are you interested in getting done?',
+      content: "Hi, my name is Miguel. I'm a tattoo artist based in Austin, TX. I specialize in a variety of styles, with a focus on black and grey realism. I'm experienced working with all skin tones and a wide range of subject matter. What are you interested in getting done?",
     }
   ])
   const [step, setStep] = useState<Step>('description')
@@ -74,11 +101,9 @@ export default function ChatWindow({ onComplete }: Props) {
   const advanceStep = (currentStep: Step, answer: string, newAnswersOverride?: Record<string, string>) => {
     const newAnswers = { ...(newAnswersOverride ?? answers), [currentStep]: answer }
     setAnswers(newAnswers)
-
     const idx = STEP_SEQUENCE.indexOf(currentStep)
     const nextStep = STEP_SEQUENCE[idx + 1] as Step
     setStep(nextStep)
-
     setTimeout(() => {
       if (nextStep === 'processing') {
         submitToBackend(newAnswers)
@@ -137,7 +162,7 @@ export default function ChatWindow({ onComplete }: Props) {
           contact: finalAnswers.contact ?? '',
           description: finalAnswers.description ?? '',
           size_selection: finalAnswers.size?.toLowerCase() ?? '',
-          placement: finalAnswers.placement ?? 'not specified', // FIX: use actual answer
+          placement: finalAnswers.placement ?? 'not specified',
           styles: finalAnswers.style ? [finalAnswers.style.toLowerCase().replace(' ', '_')] : [],
           is_cover_up: finalAnswers.coverup === 'Yes',
           cover_up_description: null,
@@ -148,30 +173,56 @@ export default function ChatWindow({ onComplete }: Props) {
           guided_discovery: null,
         }),
       })
+
       const data = await res.json()
       const message = data.client_message ?? ''
 
-      const allPrices = [...message.matchAll(/\$(\d{1,4})/g)].map(m => parseInt(m[1]))
+      // ── Price extraction ──────────────────────────────────────
+      const allPrices = [...message.matchAll(/\$(\d{1,4})/g)].map((m: RegExpMatchArray) => parseInt(m[1]))
       const priceMin = allPrices.length >= 2 ? Math.min(...allPrices) : 800
       const priceMax = allPrices.length >= 2 ? Math.max(...allPrices) : 1000
 
-      const dateMatch = message.match(/(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)[,\s]+([A-Z][a-z]+ \d{1,2})/)
-      const estimatedDate = dateMatch ? `${dateMatch[1]} · ${dateMatch[2]}` : 'Saturday · May 17'
+      // ── Intake ID ─────────────────────────────────────────────
+      // Passed to EstimateCard so it can call /api/miguel/confirm-date
+      const intakeId: string = data.intake_id ?? ''
+
+      // ── Date extraction ───────────────────────────────────────
+      // Prefer backend available_dates array, fall back to prose parsing
+      let availableDates: string[] = []
+
+      if (Array.isArray(data.available_dates) && data.available_dates.length > 0) {
+        availableDates = data.available_dates.map((d: string) =>
+          d.includes('·') ? d : d.replace(/,?\s+/, ' · ')
+        )
+      } else {
+        availableDates = parseAvailableDates(message)
+      }
+
+      if (availableDates.length === 0) {
+        availableDates = ['Saturday · May 10', 'Thursday · May 15', 'Saturday · May 24']
+      }
+
+      const estimatedDate = availableDates[0]
 
       setTimeout(() => {
         onComplete({
           priceMin,
           priceMax,
           estimatedDate,
+          availableDates,
+          intakeId,
           summary: message || 'Miguel will review your request and confirm shortly.',
         })
       }, 2800)
+
     } catch {
       setTimeout(() => {
         onComplete({
           priceMin: 800,
           priceMax: 1000,
           estimatedDate: 'Saturday · May 17',
+          availableDates: ['Saturday · May 17', 'Thursday · May 22', 'Saturday · May 31'],
+          intakeId: '',
           summary: "Miguel will review your request and confirm shortly. You'll receive a message with next steps.",
         })
       }, 2800)
@@ -304,12 +355,8 @@ export default function ChatWindow({ onComplete }: Props) {
                     transition: 'all 0.15s ease',
                     background: 'rgba(201,168,76,0.04)',
                   }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = 'rgba(201,168,76,0.09)'
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = 'rgba(201,168,76,0.04)'
-                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.09)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.04)' }}
                 >
                   <div style={{ fontSize: '20px', marginBottom: '8px' }}>↑</div>
                   <div style={{ color: 'var(--gold)', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>

@@ -9,6 +9,8 @@ export interface Estimate {
   priceMin: number
   priceMax: number
   estimatedDate: string
+  availableDates: string[]   // real dates from Miguel's Google Calendar
+  intakeId: string           // needed to call /api/miguel/confirm-date
   summary: string
 }
 
