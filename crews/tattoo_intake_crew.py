@@ -468,7 +468,8 @@ def create_intake_tasks(form_data: dict):
         agent=pricing_agent,
         context=[classify_task]
     )
-scheduling_task = Task(
+
+    scheduling_task = Task(
         description=f"""Find available appointment dates for this
         submission based on the session type from the Pricing Agent.
         Apply Miguel's scheduling rules:
@@ -490,7 +491,7 @@ scheduling_task = Task(
         agent=scheduling_agent,
         context=[classify_task, pricing_task]
     )
-       
+
     response_task = Task(
         description=f"""Produce two outputs using everything from
         the upstream agents.
@@ -541,8 +542,7 @@ scheduling_task = Task(
         context=[classify_task, pricing_task, scheduling_task]
     )
 
-    return [classify_task, pricing_task,
-            scheduling_task, response_task]
+    return [classify_task, pricing_task, scheduling_task, response_task]
 
 
 # ─────────────────────────────────────────
