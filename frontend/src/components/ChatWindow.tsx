@@ -151,9 +151,9 @@ export default function ChatWindow({ onComplete }: Props) {
       const data = await res.json()
       const message = data.client_message ?? ''
 
-      const priceMatch = message.match(/\$(\d{1,4})\s*(?:to|and|-)\s*\$?(\d{1,4})/)
-      const priceMin = priceMatch ? parseInt(priceMatch[1]) : 800
-      const priceMax = priceMatch ? parseInt(priceMatch[2]) : 1000
+      const allPrices = [...message.matchAll(/\$(\d{1,4})/g)].map(m => parseInt(m[1]))
+      const priceMin = allPrices.length >= 2 ? Math.min(...allPrices) : 800
+      const priceMax = allPrices.length >= 2 ? Math.max(...allPrices) : 1000
 
       const dateMatch = message.match(/(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)[,\s]+([A-Z][a-z]+ \d{1,2})/)
       const estimatedDate = dateMatch ? `${dateMatch[1]} · ${dateMatch[2]}` : 'Saturday · May 17'
