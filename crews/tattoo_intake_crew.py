@@ -9,6 +9,7 @@ from tools.tattoo_pricing_tool import (
     calculate_tattoo_price,
     get_deposit_amount,
     classify_session_type
+    from tools.google_calendar_tool import get_available_dates
 )
 import json
 
@@ -468,31 +469,19 @@ def create_intake_tasks(form_data: dict):
         context=[classify_task]
     )
 
-    scheduling_task = Task(
+  scheduling_task = Task(
         description=f"""Find available appointment dates for this
         submission based on the session type from the Pricing Agent.
-
         Apply Miguel's scheduling rules:
         - Minimum 2 weeks from today
         - Maximum 2 months from today
-        - Prioritize weekend dates
         - Spread across different weeks
         - Apply correct day capacity rule for session type
         - Never include appointment times — dates only
         - Always include calendar source note
-
         Client's preferred timing: {form_data.get('preferred_timing', 'flexible')}
-
-        For MVP use this sample availability
-        — replace with live calendar data when
-        Google Calendar integration is complete:
-
-        Available dates in the next 2 months:
-        Saturday May 10, Thursday May 15,
-        Saturday May 17, Tuesday May 20,
-        Saturday May 24, Thursday May 29,
-        Saturday May 31, Tuesday June 3,
-        Saturday June 7, Thursday June 12""",
+        Available dates from Miguel's live Google Calendar:
+        {', '.join(get_available_dates(form_data.get('size_selection', 'medium')))}""",
         expected_output="""Complete scheduling output containing:
         - Exactly three date options as day and date only — no times
         - Day capacity flag for the session type
@@ -502,7 +491,7 @@ def create_intake_tasks(form_data: dict):
         agent=scheduling_agent,
         context=[classify_task, pricing_task]
     )
-
+       
     response_task = Task(
         description=f"""Produce two outputs using everything from
         the upstream agents.
