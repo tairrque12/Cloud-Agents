@@ -23,7 +23,7 @@ const STEP_SEQUENCE: Step[] = [
 ]
 
 const STEP_QUESTIONS: Partial<Record<Step, string>> = {
-  size: 'That sounds clean. How big are you thinking?',
+  size: 'Let\'s Do It! How big are you thinking?',
   placement: 'Where on your body do you want this tattoo?',
   style: 'Got it — and what style are you drawn to?',
   coverup: 'Is this a cover up of an existing tattoo?',
