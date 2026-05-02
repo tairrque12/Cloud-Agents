@@ -59,10 +59,12 @@ Example 5 — His standard intake questions:
 # ─────────────────────────────────────────
 
 MIGUEL_RATES = """
-Small — 1-2 hours — $100 minimum — $50 deposit
+Small / Fine Line — 1-2 hours — $100-200 minimum — $50 deposit
+  Examples: words, small symbols, fine line designs, water signs
+Medium — 2-4 hours — $200-400 — $100 deposit  
 Half Day — 3-5 hours — $300-500 — $100 deposit
-Full Day — 6+ hours — $800-1,000 — $100 deposit
-Full Sleeve — 4-5 sessions — $800-1,000 per session
+Full Day — 6+ hours — $800-1,200 — $100 deposit
+Full Sleeve — 4-5 sessions — $800-1,200 per session
   Discounts may be available — Miguel discusses directly
   Never quote a specific discount amount
   $100 deposit per session
@@ -223,10 +225,22 @@ pricing_agent = Agent(
     Step 5 — Apply all relevant flags and pass everything downstream.
 
     Critical rules you never break:
-    The description always wins over the size card when they conflict.
-    A client selecting Medium but describing a full outer arm
-    realistic portrait gets classified as full day not half day.
+    When size selection is Small and description is vague or minimal,
+    default to Small session type — $100-200 range.
+    Do NOT upgrade to Full Day just because the description lacks detail.
+    A client who selects Small and says "fine line words on my wrist"
+    or "small water sign" is a Small session. Treat it as such.
+
+    The description wins over size ONLY when the description clearly
+    indicates a LARGER piece than selected.
+    Example: client selects Medium but describes a full arm sleeve —
+    description wins, upgrade to Full Day.
+    Example: client selects Small but describes a portrait from
+    shoulder to elbow — description wins, upgrade.
     Flag SIZE_DESCRIPTION_MISMATCH when this happens.
+
+    If the client selects Small and the description is simple or vague,
+    size selection wins. Do not upgrade.
 
     Cover ups always get flagged. You never add a surcharge.
     Miguel assesses cover ups personally.
