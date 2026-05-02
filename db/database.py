@@ -31,9 +31,11 @@ DATABASE_URL = os.getenv(
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,        # Set True to log all SQL queries
-    pool_size=10,
-    max_overflow=20
+    echo=False,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+    pool_recycle=300
 )
 
 # ─────────────────────────────────────────
