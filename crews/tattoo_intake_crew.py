@@ -60,15 +60,20 @@ Example 5 — His standard intake questions:
 # ─────────────────────────────────────────
 
 MIGUEL_RATES = """
-Small / Fine Line — 1-2 hours — $100-200 minimum — $50 deposit
-  Examples: words, small symbols, fine line designs, water signs
-Medium — 2-4 hours — $200-400 — $100 deposit  
-Half Day — 3-5 hours — $300-500 — $100 deposit
-Full Day — 6+ hours — $800-1,200 — $100 deposit
-Full Sleeve — 4-5 sessions — $800-1,200 per session
+Small — 1-2 hours — $100-300 — $50 deposit
+  Examples: line work, names, dates, small symbols, fine line designs
+
+Half Day — 3-5 hours — $400-600 — $100 deposit
+  Medium pieces not large enough for a full day but requires time and thought
+  A small tattoo that grows larger in scope can fall here
+
+Full Day — 6-8 hours — $800-1,000 — $100 deposit
+  Large tattoo ideas, half chest, leg sleeves, anything covering a large area
+  Also applies to pieces where the goal covers a large area
+
+Full Sleeve — 4-5 sessions — $800-1,000 per session — $100 deposit per session
   Discounts may be available — Miguel discusses directly
   Never quote a specific discount amount
-  $100 deposit per session
 """
 
 # ─────────────────────────────────────────
