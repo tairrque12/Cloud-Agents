@@ -1,7 +1,7 @@
 # api/main.py
 # Inkbook — FastAPI Backend
 # Configured for: Miguel
-# Last updated: May 1, 2026
+# Last updated: May 2, 2026
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import sys
 import os
+import re
 import uuid
 import traceback
 
@@ -107,9 +108,14 @@ class IntakeRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     intake_id: str
     decision: str
+    selected_date: Optional[str] = None       # client's chosen date from date picker
     adjusted_price: Optional[str] = None
     adjusted_dates: Optional[str] = None
     adjusted_message: Optional[str] = None
+
+class DateConfirmRequest(BaseModel):
+    intake_id: str
+    selected_date: str
 
 # ─────────────────────────────────────────
 # IN-MEMORY STORE
@@ -131,6 +137,48 @@ def parse_crew_output(result: str) -> tuple:
         client_message = result.strip()
         session_summary = "Session summary not generated."
     return client_message, session_summary
+
+
+def parse_available_dates(text: str) -> list:
+    """
+    Extract all day + date strings from any text block.
+    Works on both client_message prose and raw scheduling agent output.
+
+    Matches patterns like:
+      Saturday May 10
+      Thursday, May 15
+      Saturday · May 24
+
+    Returns a deduplicated list of formatted strings: "Saturday · May 10"
+    Capped at 5 results.
+    """
+    DAY_NAMES = r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
+    MONTH_NAMES = (
+        r'(?:January|February|March|April|May|June|'
+        r'July|August|September|October|November|December)'
+    )
+
+    pattern = re.compile(
+        rf'({DAY_NAMES})[,\s·]+({MONTH_NAMES}\s+\d{{1,2}})',
+        re.IGNORECASE
+    )
+
+    dates = []
+    seen = set()
+    for match in pattern.finditer(text):
+        # Normalize capitalization
+        day = match.group(1).capitalize()
+        month_day = match.group(2).strip()
+        # Capitalize month name
+        parts = month_day.split()
+        if len(parts) == 2:
+            month_day = f"{parts[0].capitalize()} {parts[1]}"
+        formatted = f"{day} · {month_day}"
+        if formatted not in seen:
+            seen.add(formatted)
+            dates.append(formatted)
+
+    return dates[:5]
 
 
 # NOTE: detect_classification has been removed.
@@ -292,6 +340,17 @@ async def intake(
 
         client_message, session_summary = parse_crew_output(result)
 
+        # ── Extract available dates ────────────
+        # Parse from client_message prose — the scheduling agent
+        # has already injected real calendar dates into the response.
+        # parse_available_dates finds all day+date patterns and
+        # returns them as a clean deduplicated list.
+        available_dates = parse_available_dates(client_message)
+        if not available_dates:
+            # Fallback: parse from the full raw crew output
+            available_dates = parse_available_dates(result)
+        print(f">>> Available dates extracted: {available_dates}")
+
         # ── Database ──────────────────────────
         print(">>> Writing to database...")
         artist = await get_miguel(db)
@@ -321,6 +380,10 @@ async def intake(
         client.total_intakes = (client.total_intakes or 0) + 1
 
         # ── Telegram ──────────────────────────
+        # Initial notification — no selected_date yet.
+        # Client hasn't picked a date on the frontend at this point.
+        # A second Telegram message fires via /api/miguel/confirm-date
+        # once the client selects and confirms their date.
         print(">>> Sending Telegram notification...")
         try:
             notify_miguel(
@@ -329,7 +392,8 @@ async def intake(
                 client_contact=request.contact,
                 client_message=client_message,
                 session_summary=session_summary,
-                intake_id=short_id
+                intake_id=short_id,
+                selected_date=None
             )
             print(">>> Telegram sent")
         except Exception as telegram_error:
@@ -340,6 +404,8 @@ async def intake(
             "client_name": request.client_name,
             "client_contact": request.contact,
             "client_message": client_message,
+            "available_dates": available_dates,
+            "selected_date": None,              # set when client confirms via /confirm-date
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
@@ -353,7 +419,8 @@ async def intake(
             "status": "success",
             "message": "Request submitted to Miguel for review",
             "intake_id": short_id,
-            "client_message": client_message
+            "client_message": client_message,
+            "available_dates": available_dates      # frontend uses this for date picker
         }
 
     except Exception as e:
@@ -362,6 +429,53 @@ async def intake(
             status_code=500,
             detail=f"Intake failed: {str(e)}"
         )
+
+
+@app.post("/api/miguel/confirm-date")
+async def confirm_date(request: DateConfirmRequest):
+    """
+    Called when the client selects a date and taps 'Send to Miguel'
+    on the confirmation screen. Stores their selected date and fires
+    a follow-up Telegram message to Miguel with the chosen date.
+    """
+    try:
+        short_id = request.intake_id
+        selected_date = request.selected_date
+
+        if short_id not in intake_store:
+            raise HTTPException(status_code=404, detail="Intake not found.")
+
+        intake = intake_store[short_id]
+
+        # Store the selected date
+        intake_store[short_id]["selected_date"] = selected_date
+        print(f">>> Date confirmed: {short_id} → {selected_date}")
+
+        # Fire follow-up Telegram to Miguel with the chosen date
+        try:
+            send_telegram_message(
+                f"📅 DATE SELECTED\n\n"
+                f"Client: {intake['client_name']}\n"
+                f"Intake: {short_id}\n"
+                f"Selected Date: {selected_date}\n\n"
+                f"Reply ✅ APPROVE to confirm this booking."
+            )
+            print(">>> Date confirmation sent to Telegram")
+        except Exception as telegram_error:
+            print(f">>> Telegram date notification failed (non-fatal): {str(telegram_error)}")
+
+        return {
+            "status": "success",
+            "message": "Date confirmed and sent to Miguel",
+            "intake_id": short_id,
+            "selected_date": selected_date
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Date confirmation failed: {str(e)}")
 
 
 @app.post("/api/miguel/approve")

@@ -1,10 +1,11 @@
 # tools/telegram_notifier.py
 # Inkbook — Telegram Notification Tool
 # Sends Miguel his approval card for every intake
-# Last updated: April 30, 2026
+# Last updated: May 2, 2026
 
 import os
 import requests
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,7 +27,8 @@ def format_miguel_card(
     client_contact: str,
     client_message: str,
     session_summary: str,
-    intake_id: str
+    intake_id: str,
+    selected_date: Optional[str] = None
 ) -> str:
 
     if "STRONG" in classification.upper():
@@ -34,12 +36,20 @@ def format_miguel_card(
     else:
         header = "🟡 SOFT CLIENT — Exploring, not ready yet"
 
+    # Show selected date prominently if the client has chosen one,
+    # otherwise show a pending note so Miguel knows to wait for it.
+    if selected_date:
+        date_line = f"📅 Selected Date: {selected_date}"
+    else:
+        date_line = "📅 Date: Pending client selection"
+
     card = f"""
 {header}
 
 👤 CLIENT
 Name: {client_name}
 Contact: {client_contact}
+{date_line}
 
 ─────────────────────────
 📝 DRAFTED RESPONSE
@@ -114,8 +124,16 @@ def notify_miguel(
     client_contact: str,
     client_message: str,
     session_summary: str,
-    intake_id: str
+    intake_id: str,
+    selected_date: Optional[str] = None
 ):
+    """
+    Sends Miguel's approval card to Telegram.
+
+    selected_date is optional — it will be None on the initial
+    intake notification (client hasn't picked yet) and populated
+    when /api/miguel/confirm-date fires after the client confirms.
+    """
     # Truncate individual sections to keep card readable
     # Full card with all fields stays under Telegram limits
     client_message_trimmed = client_message[:1500] if len(client_message) > 1500 else client_message
@@ -127,7 +145,8 @@ def notify_miguel(
         client_contact=client_contact,
         client_message=client_message_trimmed,
         session_summary=session_summary_trimmed,
-        intake_id=intake_id
+        intake_id=intake_id,
+        selected_date=selected_date
     )
 
     send_telegram_message(card)
@@ -282,6 +301,7 @@ which date works.""",
 full outer arm, Native American inspired.
 6+ hours. No other bookings this day.
 Strong client, clear vision, no flags.""",
-        intake_id="TEST-001"
+        intake_id="TEST-001",
+        selected_date="Saturday · May 17"
     )
     print("Done. Check Telegram.")
