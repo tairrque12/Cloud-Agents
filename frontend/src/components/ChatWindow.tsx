@@ -1,10 +1,11 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
 // Updated:
-//   - Size chips: removed Full Sleeve (now lives in placement)
-//   - Placement chips: added Full Arm Sleeve and Full Leg Sleeve
-//   - Passes preferredTiming through so EstimateCard can show
-//     a soft note when offered dates are outside the client's window
+//   - Chips now support optional descriptions (sublabels)
+//   - Size step shows hours + est. price under each option so
+//     users understand Miguel's tier definitions before picking
+//   - Large explicitly marked "(Sleeves)" so sleeve work routes
+//     here rather than being confused with size
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -12,10 +13,15 @@ import type { Estimate } from '../App'
 interface Message {
   role: 'assistant' | 'user'
   content: string
-  chips?: string[]
+  chips?: ChipOption[]
   isUpload?: boolean
   stepKey?: string
 }
+
+// ─── CHIP OPTION ──────────────────────────────────────────────────
+// A chip can be a plain string OR an object with a description.
+// String form stays backward-compatible with simple steps.
+type ChipOption = string | { label: string; description: string }
 
 interface Props {
   onComplete: (estimate: Estimate) => void
@@ -43,11 +49,14 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
 }
 
 // ─── CHIPS ────────────────────────────────────────────────────────
-// Size: removed Full Sleeve (it was redundant with placement)
-// Placement: added Full Arm Sleeve and Full Leg Sleeve so users
-// can express sleeve intent through location instead of size.
-const CHIPS: Partial<Record<Step, string[]>> = {
-  size: ['Small', 'Medium', 'Large'],
+// Size: Miguel's actual tier definitions baked in as sublabels.
+// All prices marked "Est." so users know these are estimates.
+const CHIPS: Partial<Record<Step, ChipOption[]>> = {
+  size: [
+    { label: 'Small',           description: '1–2 hrs · Est. $100–$300' },
+    { label: 'Medium',          description: '3–5 hrs · Est. $400–$600' },
+    { label: 'Large (Sleeves)', description: '6–8 hrs · Est. $800–$1,000' },
+  ],
   placement: [
     'Forearm', 'Upper Arm', 'Full Arm Sleeve',
     'Chest', 'Back',
@@ -58,6 +67,22 @@ const CHIPS: Partial<Record<Step, string[]>> = {
   coverup: ['Yes', 'No'],
   budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
   timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
+}
+
+// Helper — returns the underlying value sent to backend.
+// For descriptive chips we strip parenthetical hints so backend
+// gets a clean value (e.g. "Large (Sleeves)" → "Large").
+function chipValue(chip: ChipOption): string {
+  const label = typeof chip === 'string' ? chip : chip.label
+  return label.replace(/\s*\(.*?\)\s*/g, '').trim()
+}
+
+function chipLabel(chip: ChipOption): string {
+  return typeof chip === 'string' ? chip : chip.label
+}
+
+function chipDescription(chip: ChipOption): string | null {
+  return typeof chip === 'string' ? null : chip.description
 }
 
 // ─── DATE PARSING (fallback if backend dates absent) ──────────────
@@ -84,8 +109,6 @@ function parseAvailableDates(text: string): string[] {
 }
 
 // ─── PRICING FALLBACK MAP ─────────────────────────────────────────
-// Mirrors PRICING_TIERS in api/main.py.
-// Used only if the backend response is missing pricing fields.
 const FALLBACK_PRICING: Record<string, { min: number; max: number }> = {
   small:       { min: 100, max: 300 },
   medium:      { min: 400, max: 600 },
@@ -150,10 +173,11 @@ export default function ChatWindow({ onComplete }: Props) {
     advanceStep(step, text)
   }
 
-  const handleChip = (chip: string, stepKey: string) => {
+  const handleChip = (chip: ChipOption, stepKey: string) => {
     if (stepKey !== step) return
-    addUserMessage(chip)
-    advanceStep(step, chip)
+    const value = chipValue(chip)
+    addUserMessage(chipLabel(chip))
+    advanceStep(step, value)
   }
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -180,8 +204,6 @@ export default function ChatWindow({ onComplete }: Props) {
     const sizeKey = rawSize.replace(' ', '_')
     const placement = finalAnswers.placement ?? 'not specified'
 
-    // If placement contains "sleeve", treat this as a full_sleeve case
-    // for fallback pricing — mirrors backend behavior.
     const isSleevePlacement = placement.toLowerCase().includes('sleeve')
     const fallbackKey = isSleevePlacement ? 'full_sleeve' : sizeKey
 
@@ -209,7 +231,6 @@ export default function ChatWindow({ onComplete }: Props) {
       const data = await res.json()
       const message = data.client_message ?? ''
 
-      // ── Pricing — read from structured backend response ─────
       const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
       const priceMin: number = typeof data.price_min === 'number' ? data.price_min : fallback.min
       const priceMax: number = typeof data.price_max === 'number' ? data.price_max : fallback.max
@@ -217,7 +238,6 @@ export default function ChatWindow({ onComplete }: Props) {
       const intakeId: string = data.intake_id ?? ''
       const preferredTiming: string = data.preferred_timing ?? finalAnswers.timeline ?? ''
 
-      // ── Date extraction ──────────────────────────────────────
       let availableDates: string[] = []
       if (Array.isArray(data.available_dates) && data.available_dates.length > 0) {
         availableDates = data.available_dates.map((d: string) =>
@@ -328,14 +348,19 @@ export default function ChatWindow({ onComplete }: Props) {
                 display: 'flex', flexWrap: 'wrap', gap: '8px',
                 marginTop: '10px', paddingLeft: '38px',
               }}>
-                {msg.chips.map(chip => {
+                {msg.chips.map((chip, idx) => {
                   const isActive = msg.stepKey === step
+                  const label = chipLabel(chip)
+                  const description = chipDescription(chip)
+                  const isDescriptive = description !== null
+
                   return (
                     <button
-                      key={chip}
+                      key={idx}
                       onClick={() => handleChip(chip, msg.stepKey!)}
                       style={{
-                        padding: '8px 16px', borderRadius: '999px',
+                        padding: isDescriptive ? '10px 18px' : '8px 16px',
+                        borderRadius: isDescriptive ? '12px' : '999px',
                         border: `1px solid ${isActive ? 'var(--border)' : 'rgba(201,168,76,0.07)'}`,
                         background: 'transparent',
                         color: isActive ? 'var(--text)' : 'var(--text-muted)',
@@ -343,6 +368,12 @@ export default function ChatWindow({ onComplete }: Props) {
                         cursor: isActive ? 'pointer' : 'default',
                         transition: 'all 0.15s ease',
                         opacity: isActive ? 1 : 0.4,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-start',
+                        gap: isDescriptive ? '3px' : 0,
+                        textAlign: 'left',
+                        lineHeight: 1.3,
                       }}
                       onMouseEnter={e => {
                         if (isActive) {
@@ -357,7 +388,22 @@ export default function ChatWindow({ onComplete }: Props) {
                         }
                       }}
                     >
-                      {chip}
+                      <span style={{
+                        fontWeight: isDescriptive ? 500 : 400,
+                        fontSize: isDescriptive ? '13px' : '13px',
+                      }}>
+                        {label}
+                      </span>
+                      {description && (
+                        <span style={{
+                          fontSize: '11px',
+                          color: 'var(--text-muted)',
+                          fontWeight: 300,
+                          letterSpacing: '0.02em',
+                        }}>
+                          {description}
+                        </span>
+                      )}
                     </button>
                   )
                 })}
