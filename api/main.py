@@ -6,17 +6,18 @@
 # TELEGRAM ARCHITECTURE:
 # Telegram fires once — on /api/miguel/confirm-date —
 # after the client either picks a date or signals that none work.
-# One complete card. No partial notifications. No race conditions.
 #
 # PRICING ARCHITECTURE:
-# Prices are anchored to Miguel's PRICING_TIERS based on the session
-# type assigned by the pricing agent. Never scraped from prose.
+# Prices are anchored to PRICING_TIERS based on session type.
+# Session type is detected from:
+#   1. Pricing agent output (highest priority)
+#   2. Placement field — if placement mentions "sleeve" → full_sleeve
+#   3. Client size_selection (fallback)
+# Never scraped from prose.
 #
 # DATE ARCHITECTURE:
-# Client either selects one of the offered dates OR signals that
-# none of them work. The "none work" path passes a sentinel value
-# of "NEEDS_ALTERNATE" so Miguel sees a flagged card and reaches
-# out personally. Single source of truth: Miguel's Google Calendar.
+# "NEEDS_ALTERNATE" sentinel for clients whose preferred dates
+# don't match Miguel's calendar. Triggers personal followup.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -195,15 +196,28 @@ def parse_available_dates(text: str) -> list:
     return dates[:5]
 
 
-def extract_pricing(pricing_agent_output: str, size_selection: str) -> dict:
+def extract_pricing(
+    pricing_agent_output: str,
+    size_selection: str,
+    placement: str = ""
+) -> dict:
     """
     Extract structured pricing data anchored to PRICING_TIERS.
-    Detects session type from pricing agent output, falls back to
-    client size_selection. Never scrapes raw numbers from prose.
+
+    Detection priority:
+      1. Pricing agent declared session type (highest authority)
+      2. Placement contains "sleeve" → full_sleeve
+         (handles UI cases like size=Large + placement=Full Arm Sleeve)
+      3. Client size_selection mapped to a tier
+
+    Never scrapes raw numbers from prose.
     """
     text = pricing_agent_output.lower()
+    placement_lower = (placement or "").lower()
 
     session_type = None
+
+    # ── Priority 1: agent's declared session type ───────────────
     if "full sleeve" in text:
         session_type = "full_sleeve"
     elif "full day" in text:
@@ -213,6 +227,24 @@ def extract_pricing(pricing_agent_output: str, size_selection: str) -> dict:
     elif "small" in text:
         session_type = "small"
 
+    # ── Priority 2: placement-aware sleeve override ─────────────
+    # If the user picked a sleeve placement (Full Arm Sleeve,
+    # Full Leg Sleeve, etc.) but the agent didn't catch it,
+    # upgrade to full_sleeve. Sleeve placement always means
+    # multi-session work regardless of size selection.
+    if not session_type and "sleeve" in placement_lower:
+        session_type = "full_sleeve"
+        print(f">>> Sleeve placement detected ('{placement}') — "
+              f"upgraded to full_sleeve")
+
+    # Edge case: agent said "small" but placement is sleeve.
+    # Trust the placement — sleeve overrides small classification.
+    elif session_type == "small" and "sleeve" in placement_lower:
+        session_type = "full_sleeve"
+        print(f">>> Sleeve placement override — "
+              f"agent said small but placement is '{placement}'")
+
+    # ── Priority 3: size_selection fallback ─────────────────────
     if not session_type:
         size_to_tier = {
             "small": "small",
@@ -342,7 +374,7 @@ async def intake(
 ):
     """
     Runs the crew and returns the estimate to the frontend.
-    Does NOT send Telegram. Telegram fires only after the client
+    Does NOT send Telegram. Telegram fires only after client
     selects a date (or signals none work) via /api/miguel/confirm-date.
     """
     try:
@@ -353,6 +385,7 @@ async def intake(
         print(f">>> Mapped budget: {request.budget_range} → {budget_db}")
         print(f">>> Mapped timing: {request.preferred_timing} → {timing_db}")
         print(f">>> Mapped size: {request.size_selection} → {size_db}")
+        print(f">>> Placement: {request.placement}")
 
         form_data = {
             "client_name": request.client_name,
@@ -380,7 +413,10 @@ async def intake(
 
         client_message, session_summary = parse_crew_output(result)
 
-        pricing = extract_pricing(result, size_db)
+        # ── Pricing — placement-aware extraction ─────────────────
+        # Pass placement so extract_pricing can detect sleeve cases
+        # that the agent might miss (e.g. size=Large, placement=Full Arm Sleeve)
+        pricing = extract_pricing(result, size_db, request.placement)
         print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
               f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
 
@@ -425,6 +461,7 @@ async def intake(
             "available_dates": available_dates,
             "selected_date": None,
             "pricing": pricing,
+            "preferred_timing": timing_db,
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
@@ -438,6 +475,7 @@ async def intake(
             "intake_id": short_id,
             "client_message": client_message,
             "available_dates": available_dates,
+            "preferred_timing": timing_db,
             "price_min": pricing["price_min"],
             "price_max": pricing["price_max"],
             "deposit": pricing["deposit"],
@@ -459,12 +497,7 @@ async def confirm_date(
 ):
     """
     Called when the client selects a date OR signals none of the
-    offered dates work. This is the ONLY place Telegram fires.
-
-    selected_date can be:
-      - A real date string ("Saturday · May 10")
-      - The sentinel "NEEDS_ALTERNATE" — meaning client tapped
-        "None of these dates work." Miguel will reach out personally.
+    offered dates work. The ONLY place Telegram fires.
     """
     try:
         short_id = request.intake_id
@@ -481,7 +514,6 @@ async def confirm_date(
         else:
             print(f">>> Date confirmed: {short_id} → {selected_date}")
 
-        # ── Fire single complete Telegram card ────────────────
         print(">>> Sending Telegram notification...")
         try:
             notify_miguel(
@@ -542,6 +574,7 @@ async def telegram_webhook(
     """
     Handles Miguel's replies from Telegram.
     Format: APPROVE C7D3828A / DECLINE C7D3828A / ADJUST C7D3828A
+    Concurrent-safe — parses ID directly from message text.
     """
     try:
         body = await request.json()

@@ -1,6 +1,10 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
-// Updated: pricing read directly from backend response (no regex scraping)
+// Updated:
+//   - Size chips: removed Full Sleeve (now lives in placement)
+//   - Placement chips: added Full Arm Sleeve and Full Leg Sleeve
+//   - Passes preferredTiming through so EstimateCard can show
+//     a soft note when offered dates are outside the client's window
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -38,16 +42,25 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
   contact: "What's the best phone number to reach you?",
 }
 
+// ─── CHIPS ────────────────────────────────────────────────────────
+// Size: removed Full Sleeve (it was redundant with placement)
+// Placement: added Full Arm Sleeve and Full Leg Sleeve so users
+// can express sleeve intent through location instead of size.
 const CHIPS: Partial<Record<Step, string[]>> = {
-  size: ['Small', 'Medium', 'Large', 'Full Sleeve'],
-  placement: ['Full Sleeve', 'Forearm', 'Upper Arm', 'Chest', 'Back', 'Leg', 'Torso', 'Hand', 'Neck', 'Other'],
+  size: ['Small', 'Medium', 'Large'],
+  placement: [
+    'Forearm', 'Upper Arm', 'Full Arm Sleeve',
+    'Chest', 'Back',
+    'Leg', 'Full Leg Sleeve',
+    'Torso', 'Hand', 'Neck', 'Other'
+  ],
   style: ['Realism', 'Traditional', 'Fine Line', 'Geometric', 'Blackwork', 'Not Sure'],
   coverup: ['Yes', 'No'],
   budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
   timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
 }
 
-// ─── DATE PARSING (still used as fallback if backend dates absent) ─
+// ─── DATE PARSING (fallback if backend dates absent) ──────────────
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December']
@@ -72,7 +85,7 @@ function parseAvailableDates(text: string): string[] {
 
 // ─── PRICING FALLBACK MAP ─────────────────────────────────────────
 // Mirrors PRICING_TIERS in api/main.py.
-// Only used if the backend response is missing pricing fields.
+// Used only if the backend response is missing pricing fields.
 const FALLBACK_PRICING: Record<string, { min: number; max: number }> = {
   small:       { min: 100, max: 300 },
   medium:      { min: 400, max: 600 },
@@ -163,9 +176,14 @@ export default function ChatWindow({ onComplete }: Props) {
     setTimeout(() => addAssistantMessage('📅 Checking artist availability… ✓'), 1200)
     setTimeout(() => addAssistantMessage('💰 Preparing your estimate… ✓'), 2000)
 
-    // Pre-compute size key for fallback pricing in case backend omits it
     const rawSize = finalAnswers.size?.toLowerCase() ?? 'small'
     const sizeKey = rawSize.replace(' ', '_')
+    const placement = finalAnswers.placement ?? 'not specified'
+
+    // If placement contains "sleeve", treat this as a full_sleeve case
+    // for fallback pricing — mirrors backend behavior.
+    const isSleevePlacement = placement.toLowerCase().includes('sleeve')
+    const fallbackKey = isSleevePlacement ? 'full_sleeve' : sizeKey
 
     try {
       const res = await fetch('https://inkbook-4tlr.onrender.com/api/miguel/intake', {
@@ -176,7 +194,7 @@ export default function ChatWindow({ onComplete }: Props) {
           contact: finalAnswers.contact ?? '',
           description: finalAnswers.description ?? '',
           size_selection: rawSize,
-          placement: finalAnswers.placement ?? 'not specified',
+          placement,
           styles: finalAnswers.style ? [finalAnswers.style.toLowerCase().replace(' ', '_')] : [],
           is_cover_up: finalAnswers.coverup === 'Yes',
           cover_up_description: null,
@@ -192,19 +210,12 @@ export default function ChatWindow({ onComplete }: Props) {
       const message = data.client_message ?? ''
 
       // ── Pricing — read from structured backend response ─────
-      // Backend now returns price_min, price_max, deposit, session_type
-      // anchored on Miguel's actual rate tiers. No regex scraping.
-      // Fallback to local PRICING table only if backend omits the fields.
-      const fallback = FALLBACK_PRICING[sizeKey] ?? FALLBACK_PRICING.small
-      const priceMin: number = typeof data.price_min === 'number'
-        ? data.price_min
-        : fallback.min
-      const priceMax: number = typeof data.price_max === 'number'
-        ? data.price_max
-        : fallback.max
+      const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
+      const priceMin: number = typeof data.price_min === 'number' ? data.price_min : fallback.min
+      const priceMax: number = typeof data.price_max === 'number' ? data.price_max : fallback.max
 
-      // ── Intake ID ────────────────────────────────────────────
       const intakeId: string = data.intake_id ?? ''
+      const preferredTiming: string = data.preferred_timing ?? finalAnswers.timeline ?? ''
 
       // ── Date extraction ──────────────────────────────────────
       let availableDates: string[] = []
@@ -228,13 +239,13 @@ export default function ChatWindow({ onComplete }: Props) {
           estimatedDate,
           availableDates,
           intakeId,
+          preferredTiming,
           summary: message || 'Miguel will review your request and confirm shortly.',
         })
       }, 2800)
 
     } catch {
-      // Network failure fallback — use local pricing tier for the size
-      const fallback = FALLBACK_PRICING[sizeKey] ?? FALLBACK_PRICING.small
+      const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
       setTimeout(() => {
         onComplete({
           priceMin: fallback.min,
@@ -242,6 +253,7 @@ export default function ChatWindow({ onComplete }: Props) {
           estimatedDate: 'Saturday · May 17',
           availableDates: ['Saturday · May 17', 'Thursday · May 22', 'Saturday · May 31'],
           intakeId: '',
+          preferredTiming: finalAnswers.timeline ?? '',
           summary: "Miguel will review your request and confirm shortly. You'll receive a message with next steps.",
         })
       }, 2800)

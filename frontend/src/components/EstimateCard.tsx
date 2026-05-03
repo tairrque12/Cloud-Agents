@@ -1,6 +1,10 @@
 // src/components/EstimateCard.tsx
 // Inkbook — Estimate → Date Selection → Confirmation flow
-// Updated: adds "None of these dates work" path
+// Updated:
+//   - Soft note on date-select screen when offered dates may
+//     exceed the client's preferred timeframe (e.g. they asked
+//     for "within 2 weeks" but Miguel's first opening is 3 weeks out)
+//   - "None of these dates work" path with NEEDS_ALTERNATE sentinel
 
 import { useState } from 'react'
 import type { Estimate } from '../App'
@@ -14,6 +18,67 @@ type Screen = 'estimate' | 'date-select' | 'confirmation'
 
 const NEEDS_ALTERNATE = 'NEEDS_ALTERNATE'
 
+// ─── TIMEFRAME WINDOWS ────────────────────────────────────────────
+// Maximum days from today that each preferred timing label allows.
+// If the offered dates exceed this window, we show a soft note.
+const TIMEFRAME_DAYS: Record<string, number> = {
+  within_2_weeks: 14,
+  within_1_month: 31,
+  within_2_months: 62,
+  flexible: 9999,
+}
+
+const TIMEFRAME_LABEL: Record<string, string> = {
+  within_2_weeks: 'within 2 weeks',
+  within_1_month: 'within 1 month',
+  within_2_months: 'within 2 months',
+  flexible: 'flexible',
+}
+
+// Parse "Saturday · May 10" → Date object for the upcoming occurrence.
+// Returns null if parsing fails.
+function parseOfferedDate(formatted: string): Date | null {
+  // Match "May 10" portion
+  const match = formatted.match(/([A-Za-z]+)\s+(\d{1,2})/)
+  if (!match) return null
+  const monthName = match[1]
+  const day = parseInt(match[2], 10)
+  const months = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December']
+  const monthIdx = months.findIndex(m => m.toLowerCase() === monthName.toLowerCase())
+  if (monthIdx < 0) return null
+
+  const today = new Date()
+  let year = today.getFullYear()
+  // If the parsed month/day is before today, assume next year
+  const candidate = new Date(year, monthIdx, day)
+  if (candidate < today) {
+    candidate.setFullYear(year + 1)
+  }
+  return candidate
+}
+
+// Returns true if the EARLIEST offered date is later than the client's window
+function offeredDatesExceedTimeframe(
+  dates: string[],
+  preferredTiming: string
+): boolean {
+  if (!preferredTiming || preferredTiming === 'flexible') return false
+  const maxDays = TIMEFRAME_DAYS[preferredTiming] ?? 9999
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  for (const d of dates) {
+    const parsed = parseOfferedDate(d)
+    if (!parsed) continue
+    const diffDays = Math.floor((parsed.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+    if (diffDays <= maxDays) return false  // at least one date is in window
+  }
+  // Every date is outside the window
+  return true
+}
+
 export default function EstimateCard({ estimate, onReset }: Props) {
   const [screen, setScreen] = useState<Screen>('estimate')
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -21,10 +86,11 @@ export default function EstimateCard({ estimate, onReset }: Props) {
   const [confirmed, setConfirmed] = useState(false)
   const [sending, setSending] = useState(false)
 
-  // ─── CONFIRM HANDLER ──────────────────────────────────────────
-  // Fires /api/miguel/confirm-date with either the selected date
-  // or the NEEDS_ALTERNATE sentinel. Non-fatal — UI confirms even
-  // if the network call blips.
+  const datesExceedWindow = offeredDatesExceedTimeframe(
+    estimate.availableDates ?? [],
+    estimate.preferredTiming ?? ''
+  )
+
   const handleConfirm = async () => {
     if (sending) return
     if (!needsAlternate && !selectedDate) return
@@ -42,14 +108,13 @@ export default function EstimateCard({ estimate, onReset }: Props) {
         }),
       })
     } catch {
-      // non-fatal — continue to success regardless
+      // non-fatal
     } finally {
       setSending(false)
       setConfirmed(true)
     }
   }
 
-  // Helper for the date-select screen — pick a date and clear alternate flag
   const pickDate = (date: string) => {
     setSelectedDate(date)
     setNeedsAlternate(false)
@@ -164,6 +229,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
       : [estimate.estimatedDate]
 
     const canContinue = needsAlternate || selectedDate !== null
+    const preferredLabel = TIMEFRAME_LABEL[estimate.preferredTiming ?? ''] ?? ''
 
     return (
       <div style={{
@@ -198,11 +264,41 @@ export default function EstimateCard({ estimate, onReset }: Props) {
 
         <p style={{
           color: 'var(--text-muted)', fontSize: '13px',
-          marginBottom: '40px', textAlign: 'center',
+          marginBottom: datesExceedWindow ? '16px' : '40px',
+          textAlign: 'center',
           lineHeight: 1.6, maxWidth: '320px',
         }}>
           These are Miguel's real open dates based on his current calendar.
         </p>
+
+        {/* ── Timeframe mismatch note ──────────────────────────── */}
+        {datesExceedWindow && (
+          <div style={{
+            maxWidth: '420px',
+            width: '100%',
+            padding: '14px 18px',
+            marginBottom: '32px',
+            background: 'rgba(201,168,76,0.05)',
+            border: '1px solid rgba(201,168,76,0.25)',
+            borderRadius: '4px',
+          }}>
+            <p style={{
+              color: 'var(--gold)', fontSize: '11px',
+              letterSpacing: '0.12em', textTransform: 'uppercase',
+              marginBottom: '6px', fontWeight: 600,
+            }}>
+              Heads Up
+            </p>
+            <p style={{
+              color: 'var(--text-muted)', fontSize: '12px',
+              lineHeight: 1.6, fontWeight: 300,
+            }}>
+              You requested a tattoo {preferredLabel}, but these are Miguel's soonest open dates.
+              Pick the closest one that works, or let him know none of these fit and he'll reach
+              out personally to find something that matches your schedule.
+            </p>
+          </div>
+        )}
 
         <div style={{
           width: '100%', maxWidth: '420px',
@@ -371,11 +467,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <ConfirmRow label="Price Range" value={`$${estimate.priceMin}–$${estimate.priceMax}`} gold />
               {needsAlternate ? (
-                <ConfirmRow
-                  label="Date"
-                  value="Awaiting Miguel's outreach"
-                  gold
-                />
+                <ConfirmRow label="Date" value="Awaiting Miguel's outreach" gold />
               ) : (
                 <ConfirmRow label="Selected Date" value={selectedDate ?? ''} gold />
               )}

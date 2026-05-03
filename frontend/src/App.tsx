@@ -11,6 +11,7 @@ export interface Estimate {
   estimatedDate: string
   availableDates: string[]   // real dates from Miguel's Google Calendar
   intakeId: string           // needed to call /api/miguel/confirm-date
+  preferredTiming: string    // user's timeline pick — drives timeframe note
   summary: string
 }
 
