@@ -3,23 +3,22 @@
 # Reads Miguel's real calendar to find available dates
 # Last updated: May 3, 2026
 #
-# KEY FIX: Multi-day events (Out of shop, Valley appointments, etc.)
+# FIX 1: Multi-day TIMED events (Valley appointments, Out of shop, etc.)
 # now correctly mark ALL days in the range as busy, not just the start.
-# Previously only start_date[:10] was added to busy_dates, meaning
-# a 5-day "Out of shop" block only blocked day 1.
+# Miguel creates his blocks as timed events (e.g. May 18 2pm → May 22 3pm),
+# not all-day events. The old code treated all timed events as single-day.
 #
-# DAY FILTER: All weekdays are now considered available (Mon-Sat).
-# Sunday is excluded as Miguel typically doesn't work Sundays.
-# Previously only Sat/Thu/Tue were checked — too restrictive.
+# FIX 2: All-day events still handled correctly — end date is exclusive
+# in Google Calendar API so we loop start <= current < end.
+#
+# FIX 3: Calendar ID is migueltattooappts@gmail.com — confirmed correct
+# from the "Integrate calendar" section in Google Calendar settings.
 
 import os
 from datetime import datetime, timedelta, date
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# Updated from migueltattooappts@gmail.com — the Gmail address returns 404.
-# This is the real internal calendar ID from Miguel's Google Calendar settings URL.
-# Source: /settings/calendar/bWIndWVsdGF0dG9vYXBwdHNAZ21haWwuY29t
 CALENDAR_ID = "migueltattooappts@gmail.com"
 CREDENTIALS_FILE = os.path.join(
     os.path.dirname(__file__), "../config/google_credentials.json"
@@ -34,16 +33,20 @@ def _expand_event_dates(event: dict) -> set:
     """
     Returns the set of all calendar dates an event occupies.
 
-    Handles two event formats:
-      - Timed events: use "dateTime" field (e.g. "2026-05-10T14:00:00-05:00")
-        → extract date portion only, mark that single day busy
-      - All-day / multi-day events: use "date" field (e.g. "2026-05-18")
-        → Google Calendar end date for all-day events is EXCLUSIVE
-          (an event "May 18–22" has start=May 18, end=May 23)
-        → Expand the full range: May 18, 19, 20, 21, 22
+    Google Calendar has two event types:
 
-    This is the critical fix. The old code only added start_time[:10]
-    which missed every day after the first in multi-day blocks.
+    1. TIMED events — use "dateTime" field
+       e.g. "2026-05-18T14:00:00-05:00" to "2026-05-22T15:00:00-05:00"
+       Miguel uses these for multi-day blocks like "Valley appointments".
+       End date is INCLUSIVE — loop while current <= end_date.
+
+    2. ALL-DAY events — use "date" field
+       e.g. start="2026-05-18", end="2026-05-23"
+       End date is EXCLUSIVE in Google's API — loop while current < end_date.
+
+    The original bug: timed events were treated as single-day by only
+    slicing start[:10]. Valley appointments May 18 to May 22 only marked
+    May 18 as busy. This fix expands the full range for both event types.
     """
     busy = set()
 
@@ -51,24 +54,28 @@ def _expand_event_dates(event: dict) -> set:
     end_field = event.get("end", {})
 
     if "dateTime" in start_field:
-        # Timed event — single day
-        dt_str = start_field["dateTime"]
-        # Slice to just the date portion (handles both Z and offset formats)
-        day = dt_str[:10]
-        busy.add(day)
-
-    elif "date" in start_field:
-        # All-day or multi-day event — expand the full range
+        # Timed event — extract date from both start and end dateTime,
+        # then expand the full inclusive range day by day
         try:
-            start_date = date.fromisoformat(start_field["date"])
-            # end date is exclusive in Google Calendar API
-            end_date = date.fromisoformat(end_field["date"])
+            start_date = date.fromisoformat(start_field["dateTime"][:10])
+            end_date = date.fromisoformat(end_field["dateTime"][:10])
             current = start_date
-            while current < end_date:
+            while current <= end_date:  # inclusive
                 busy.add(current.isoformat())
                 current += timedelta(days=1)
         except (ValueError, KeyError):
-            # Malformed event — skip it
+            pass
+
+    elif "date" in start_field:
+        # All-day event — end date is exclusive per Google Calendar API
+        try:
+            start_date = date.fromisoformat(start_field["date"])
+            end_date = date.fromisoformat(end_field["date"])
+            current = start_date
+            while current < end_date:  # exclusive
+                busy.add(current.isoformat())
+                current += timedelta(days=1)
+        except (ValueError, KeyError):
             pass
 
     return busy
@@ -77,14 +84,10 @@ def _expand_event_dates(event: dict) -> set:
 def get_available_dates(session_type: str) -> list[str]:
     """
     Query Miguel's Google Calendar and return up to 5 available dates
-    within the booking window (14–60 days from today).
+    within the booking window (14 to 60 days from today).
 
-    Returns formatted date strings like "Saturday May 10".
-    Falls back to static placeholder dates if the calendar call fails.
-
-    session_type is accepted for future use (e.g. Full Day blocks
-    the entire day vs Small which might allow multiple bookings).
-    Currently all session types use the same availability logic.
+    Returns formatted strings like "Saturday May 10".
+    Falls back to real upcoming Saturdays/Thursdays if the API call fails.
     """
     try:
         creds = service_account.Credentials.from_service_account_file(
@@ -96,8 +99,6 @@ def get_available_dates(session_type: str) -> list[str]:
         window_start = now + timedelta(days=14)
         window_end = now + timedelta(days=60)
 
-        # Fetch all events in the booking window
-        # singleEvents=True expands recurring events into individual instances
         events_result = service.events().list(
             calendarId=CALENDAR_ID,
             timeMin=window_start.isoformat() + "Z",
@@ -106,7 +107,7 @@ def get_available_dates(session_type: str) -> list[str]:
             orderBy="startTime"
         ).execute()
 
-        # ── Build busy set — expand ALL event ranges ────────────
+        # Build busy set — expand ALL event ranges
         busy_dates: set = set()
         for event in events_result.get("items", []):
             busy_dates |= _expand_event_dates(event)
@@ -116,7 +117,7 @@ def get_available_dates(session_type: str) -> list[str]:
             sorted_busy = sorted(busy_dates)
             print(f">>> Busy dates sample: {sorted_busy[:10]}")
 
-        # ── Find available dates in the booking window ──────────
+        # Find available dates in the booking window
         available = []
         current = window_start
 
@@ -128,7 +129,6 @@ def get_available_dates(session_type: str) -> list[str]:
             is_free = date_str not in busy_dates
 
             if is_working_day and is_free:
-                # Format: "Saturday May 10"
                 formatted = current.strftime("%A %B %-d")
                 available.append(formatted)
                 print(f">>> Available: {formatted}")
@@ -149,9 +149,8 @@ def get_available_dates(session_type: str) -> list[str]:
 
 def _fallback_dates(from_date: datetime) -> list[str]:
     """
-    Generate 3 fallback dates when the calendar call fails.
-    Uses real upcoming Saturdays/Thursdays so they at least
-    look plausible. Miguel will manually adjust if needed.
+    Generate 3 fallback dates when the calendar API call fails.
+    Uses real upcoming Saturdays/Thursdays.
     """
     fallbacks = []
     current = from_date
