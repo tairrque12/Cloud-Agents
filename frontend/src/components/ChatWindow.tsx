@@ -1,10 +1,11 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
-// Updated:
-//   - Size chips: Large no longer mentions sleeves (Miguel's feedback)
-//   - Input placeholder shortened to fit mobile without clipping
-//   - Multi-image upload: up to 3 reference images with previews
-//     and an "+ Add another" button after the first upload
+// Mobile UX fixes:
+//   - Shortened intro message — fits on one screen without scrolling
+//   - Size chips: full-width stacked cards on mobile
+//   - Budget + timeline chips: full-width stacked on mobile
+//   - Placement chips: tighter pill wrap
+//   - Multi-image upload: up to 3 reference images
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -15,6 +16,7 @@ interface Message {
   chips?: ChipOption[]
   isUpload?: boolean
   stepKey?: string
+  fullWidthChips?: boolean
 }
 
 type ChipOption = string | { label: string; description: string }
@@ -32,10 +34,13 @@ const STEP_SEQUENCE: Step[] = [
   'reference', 'budget', 'timeline', 'name', 'contact', 'processing'
 ]
 
+// Steps whose chips should render full-width stacked on mobile
+const FULL_WIDTH_CHIP_STEPS: Set<Step> = new Set(['size', 'budget', 'timeline'])
+
 const STEP_QUESTIONS: Partial<Record<Step, string>> = {
-  size: "Let's Do It! How big are you thinking?",
+  size: "How big are you thinking?",
   placement: 'Where on your body do you want this tattoo?',
-  style: 'Got it — and what style are you drawn to?',
+  style: 'What style are you drawn to?',
   coverup: 'Is this a cover up of an existing tattoo?',
   reference: "Upload up to 3 reference images. Photos help Miguel give a more accurate quote and prepare for your session.",
   budget: "What's your rough budget for this piece?",
@@ -44,9 +49,6 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
   contact: "What's the best phone number to reach you?",
 }
 
-// ─── CHIPS ────────────────────────────────────────────────────────
-// Size: Small / Medium / Large — clean, no sleeve mention
-// Miguel confirmed: "Small medium large is good bro"
 const CHIPS: Partial<Record<Step, ChipOption[]>> = {
   size: [
     { label: 'Small',  description: '1–2 hrs · Est. $100–$300' },
@@ -80,7 +82,6 @@ function chipDescription(chip: ChipOption): string | null {
   return typeof chip === 'string' ? null : chip.description
 }
 
-// ─── DATE PARSING (fallback if backend dates absent) ──────────────
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December']
@@ -114,17 +115,15 @@ export default function ChatWindow({ onComplete }: Props) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: "Hi, my name is Miguel. I'm a tattoo artist based in Austin, TX. I specialize in a variety of styles, with a focus on black and grey realism. I'm experienced working with all skin tones and a wide range of subject matter. What are you interested in getting done?",
+      // Shortened intro — fits on one mobile screen without scrolling
+      content: "Hey! I'm Miguel, tattoo artist based in Austin, TX — black and grey realism is my specialty. What are you looking to get done?",
     }
   ])
   const [step, setStep] = useState<Step>('description')
   const [input, setInput] = useState('')
   const [answers, setAnswers] = useState<Record<string, string>>({})
-
-  // ─── Multi-image state ────────────────────────────────────────
   const [referenceImages, setReferenceImages] = useState<string[]>([])
   const [uploadDone, setUploadDone] = useState(false)
-
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -153,10 +152,12 @@ export default function ChatWindow({ onComplete }: Props) {
       } else {
         const question = STEP_QUESTIONS[nextStep]!
         const chips = CHIPS[nextStep]
+        const fullWidthChips = FULL_WIDTH_CHIP_STEPS.has(nextStep)
         addAssistantMessage(question, {
           chips,
           isUpload: nextStep === 'reference',
           stepKey: nextStep,
+          fullWidthChips,
         })
       }
     }, 500)
@@ -177,19 +178,12 @@ export default function ChatWindow({ onComplete }: Props) {
     advanceStep(step, value)
   }
 
-  // ─── Image upload handler ─────────────────────────────────────
-  // Reads new file(s), appends to referenceImages up to MAX_IMAGES.
-  // Does NOT auto-advance — user taps "Done" to proceed.
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (!files.length) return
-
-    // Reset input so same file can be re-selected if needed
     e.target.value = ''
-
     const remaining = MAX_IMAGES - referenceImages.length
     const toProcess = files.slice(0, remaining)
-
     toProcess.forEach(file => {
       const reader = new FileReader()
       reader.onload = () => {
@@ -203,16 +197,14 @@ export default function ChatWindow({ onComplete }: Props) {
     })
   }
 
-  // User taps Done — lock uploads and advance step
   const handleUploadDone = () => {
     if (uploadDone) return
     setUploadDone(true)
     const count = referenceImages.length
     const label = count === 0
       ? 'No reference image uploaded'
-      : count === 1
-        ? '📎 1 reference image uploaded'
-        : `📎 ${count} reference images uploaded`
+      : count === 1 ? '📎 1 reference image uploaded'
+      : `📎 ${count} reference images uploaded`
     addUserMessage(label)
     advanceStep('reference', count > 0 ? 'uploaded' : 'skipped')
   }
@@ -226,7 +218,6 @@ export default function ChatWindow({ onComplete }: Props) {
     const rawSize = finalAnswers.size?.toLowerCase() ?? 'small'
     const sizeKey = rawSize.replace(' ', '_')
     const placement = finalAnswers.placement ?? 'not specified'
-
     const isSleevePlacement = placement.toLowerCase().includes('sleeve')
     const fallbackKey = isSleevePlacement ? 'full_sleeve' : sizeKey
 
@@ -246,8 +237,6 @@ export default function ChatWindow({ onComplete }: Props) {
           budget_range: finalAnswers.budget ?? '',
           preferred_timing: finalAnswers.timeline ?? '',
           idea_readiness: 'knows_exactly',
-          // Send array of images — backend accepts reference_images list
-          // and falls back to reference_image (single) for compatibility
           reference_images: referenceImages,
           reference_image: referenceImages[0] ?? null,
           guided_discovery: null,
@@ -260,7 +249,6 @@ export default function ChatWindow({ onComplete }: Props) {
       const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
       const priceMin: number = typeof data.price_min === 'number' ? data.price_min : fallback.min
       const priceMax: number = typeof data.price_max === 'number' ? data.price_max : fallback.max
-
       const intakeId: string = data.intake_id ?? ''
       const preferredTiming: string = data.preferred_timing ?? finalAnswers.timeline ?? ''
 
@@ -273,33 +261,23 @@ export default function ChatWindow({ onComplete }: Props) {
         availableDates = parseAvailableDates(message)
       }
       if (availableDates.length === 0) {
-        availableDates = ['Saturday · May 10', 'Thursday · May 15', 'Saturday · May 24']
+        availableDates = ['Thursday · May 28', 'Monday · June 1', 'Wednesday · June 3']
       }
 
       const estimatedDate = availableDates[0]
-
       setTimeout(() => {
-        onComplete({
-          priceMin,
-          priceMax,
-          estimatedDate,
-          availableDates,
-          intakeId,
-          preferredTiming,
-          summary: message || 'Miguel will review your request and confirm shortly.',
-        })
+        onComplete({ priceMin, priceMax, estimatedDate, availableDates, intakeId, preferredTiming,
+          summary: message || 'Miguel will review your request and confirm shortly.' })
       }, 2800)
 
     } catch {
       const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
       setTimeout(() => {
         onComplete({
-          priceMin: fallback.min,
-          priceMax: fallback.max,
-          estimatedDate: 'Saturday · May 17',
-          availableDates: ['Saturday · May 17', 'Thursday · May 22', 'Saturday · May 31'],
-          intakeId: '',
-          preferredTiming: finalAnswers.timeline ?? '',
+          priceMin: fallback.min, priceMax: fallback.max,
+          estimatedDate: 'Thursday · May 28',
+          availableDates: ['Thursday · May 28', 'Monday · June 1', 'Wednesday · June 3'],
+          intakeId: '', preferredTiming: finalAnswers.timeline ?? '',
           summary: "Miguel will review your request and confirm shortly. You'll receive a message with next steps.",
         })
       }, 2800)
@@ -317,19 +295,19 @@ export default function ChatWindow({ onComplete }: Props) {
     }}>
       {/* Header */}
       <div style={{
-        padding: '16px 20px', borderBottom: '1px solid var(--border)',
+        padding: '14px 20px', borderBottom: '1px solid var(--border)',
         display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0,
       }}>
         <div style={{
-          width: '40px', height: '40px', borderRadius: '50%', background: 'var(--gold)',
+          width: '36px', height: '36px', borderRadius: '50%', background: 'var(--gold)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontFamily: 'var(--font-display)', fontSize: '18px', color: 'var(--black)',
+          fontFamily: 'var(--font-display)', fontSize: '16px', color: 'var(--black)',
           fontWeight: 500, flexShrink: 0,
         }}>I</div>
         <div>
-          <div style={{ fontSize: '15px', fontWeight: 500 }}>Inkbook Assistant</div>
-          <div style={{ fontSize: '12px', color: 'var(--gold-dim)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#4CAF82', display: 'inline-block' }} />
+          <div style={{ fontSize: '14px', fontWeight: 500 }}>Inkbook Assistant</div>
+          <div style={{ fontSize: '11px', color: 'var(--gold-dim)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4CAF82', display: 'inline-block' }} />
             Booking with Miguel · usually replies fast
           </div>
         </div>
@@ -337,7 +315,7 @@ export default function ChatWindow({ onComplete }: Props) {
 
       {/* Messages */}
       <div style={{
-        flex: 1, overflowY: 'auto', padding: '20px',
+        flex: 1, overflowY: 'auto', padding: '16px',
         display: 'flex', flexDirection: 'column', gap: '12px',
       }}>
         {messages.map((msg, i) => (
@@ -345,18 +323,18 @@ export default function ChatWindow({ onComplete }: Props) {
             <div style={{
               display: 'flex',
               justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              alignItems: 'flex-start', gap: '10px',
+              alignItems: 'flex-start', gap: '8px',
             }}>
               {msg.role === 'assistant' && (
                 <div style={{
-                  width: '28px', height: '28px', borderRadius: '50%', background: 'var(--gold)',
+                  width: '26px', height: '26px', borderRadius: '50%', background: 'var(--gold)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '13px', color: 'var(--black)', fontFamily: 'var(--font-display)',
+                  fontSize: '12px', color: 'var(--black)', fontFamily: 'var(--font-display)',
                   fontWeight: 500, flexShrink: 0,
                 }}>I</div>
               )}
               <div style={{
-                maxWidth: '78%', padding: '11px 15px',
+                maxWidth: '80%', padding: '10px 14px',
                 borderRadius: msg.role === 'user' ? '18px 18px 4px 18px' : '4px 18px 18px 18px',
                 background: msg.role === 'user' ? 'var(--gold)' : 'var(--surface-2)',
                 color: msg.role === 'user' ? 'var(--black)' : 'var(--text)',
@@ -371,22 +349,28 @@ export default function ChatWindow({ onComplete }: Props) {
             {/* Chips */}
             {msg.chips && msg.stepKey && (
               <div style={{
-                display: 'flex', flexWrap: 'wrap', gap: '8px',
-                marginTop: '10px', paddingLeft: '38px',
+                display: 'flex',
+                flexDirection: msg.fullWidthChips ? 'column' : 'row',
+                flexWrap: msg.fullWidthChips ? undefined : 'wrap',
+                gap: '8px',
+                marginTop: '10px',
+                paddingLeft: msg.fullWidthChips ? '0' : '34px',
               }}>
                 {msg.chips.map((chip, idx) => {
                   const isActive = msg.stepKey === step
                   const label = chipLabel(chip)
                   const description = chipDescription(chip)
                   const isDescriptive = description !== null
+                  const isFullWidth = msg.fullWidthChips
 
                   return (
                     <button
                       key={idx}
                       onClick={() => handleChip(chip, msg.stepKey!)}
                       style={{
-                        padding: isDescriptive ? '10px 18px' : '8px 16px',
-                        borderRadius: isDescriptive ? '12px' : '999px',
+                        width: isFullWidth ? '100%' : undefined,
+                        padding: isDescriptive ? '12px 18px' : '8px 16px',
+                        borderRadius: isDescriptive || isFullWidth ? '10px' : '999px',
                         border: `1px solid ${isActive ? 'var(--border)' : 'rgba(201,168,76,0.07)'}`,
                         background: 'transparent',
                         color: isActive ? 'var(--text)' : 'var(--text-muted)',
@@ -431,74 +415,50 @@ export default function ChatWindow({ onComplete }: Props) {
               </div>
             )}
 
-            {/* ── Upload zone — multi-image ───────────────────────── */}
+            {/* Upload zone */}
             {msg.isUpload && step === 'reference' && !uploadDone && (
-              <div style={{ paddingLeft: '38px', marginTop: '10px' }}>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={handleImageUpload}
-                />
+              <div style={{ paddingLeft: '34px', marginTop: '10px' }}>
+                <input ref={fileRef} type="file" accept="image/*"
+                  style={{ display: 'none' }} onChange={handleImageUpload} />
 
-                {/* Image previews */}
                 {referenceImages.length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
                     {referenceImages.map((src, idx) => (
                       <div key={idx} style={{ position: 'relative' }}>
-                        <img
-                          src={src}
-                          alt={`Reference ${idx + 1}`}
-                          style={{
-                            width: '80px', height: '80px',
-                            objectFit: 'cover',
-                            borderRadius: '8px',
-                            border: '1px solid var(--gold)',
-                          }}
-                        />
-                        {/* Remove button */}
+                        <img src={src} alt={`Reference ${idx + 1}`} style={{
+                          width: '72px', height: '72px', objectFit: 'cover',
+                          borderRadius: '8px', border: '1px solid var(--gold)',
+                        }} />
                         <button
                           onClick={() => setReferenceImages(prev => prev.filter((_, i) => i !== idx))}
                           style={{
                             position: 'absolute', top: '-6px', right: '-6px',
                             width: '18px', height: '18px', borderRadius: '50%',
                             background: 'var(--surface-2)', border: '1px solid var(--border)',
-                            color: 'var(--text-muted)', fontSize: '10px',
-                            cursor: 'pointer', display: 'flex',
-                            alignItems: 'center', justifyContent: 'center',
-                            lineHeight: 1,
+                            color: 'var(--text-muted)', fontSize: '10px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
                           }}
-                        >
-                          ✕
-                        </button>
+                        >✕</button>
                       </div>
                     ))}
                   </div>
                 )}
 
-                {/* Upload tap zone — shown until max reached */}
                 {referenceImages.length < MAX_IMAGES && (
-                  <div
-                    onClick={() => fileRef.current?.click()}
-                    style={{
-                      border: '1px dashed var(--gold)',
-                      borderRadius: '8px',
-                      padding: referenceImages.length > 0 ? '14px 20px' : '24px 20px',
-                      textAlign: 'center',
-                      cursor: 'pointer',
-                      maxWidth: '300px',
-                      transition: 'all 0.15s ease',
-                      background: 'rgba(201,168,76,0.04)',
-                      marginBottom: '10px',
-                    }}
+                  <div onClick={() => fileRef.current?.click()} style={{
+                    border: '1px dashed var(--gold)', borderRadius: '8px',
+                    padding: referenceImages.length > 0 ? '12px 16px' : '20px 16px',
+                    textAlign: 'center', cursor: 'pointer',
+                    maxWidth: '280px', marginBottom: '10px',
+                    background: 'rgba(201,168,76,0.04)', transition: 'all 0.15s ease',
+                  }}
                     onMouseEnter={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.09)' }}
                     onMouseLeave={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.04)' }}
                   >
                     {referenceImages.length === 0 ? (
                       <>
-                        <div style={{ fontSize: '20px', marginBottom: '8px' }}>↑</div>
-                        <div style={{ color: 'var(--gold)', fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                        <div style={{ fontSize: '18px', marginBottom: '6px' }}>↑</div>
+                        <div style={{ color: 'var(--gold)', fontSize: '13px', fontWeight: 500, marginBottom: '3px' }}>
                           Tap to upload a reference image
                         </div>
                         <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
@@ -513,34 +473,19 @@ export default function ChatWindow({ onComplete }: Props) {
                   </div>
                 )}
 
-                {/* Done / Skip buttons */}
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {referenceImages.length > 0 && (
-                    <button
-                      onClick={handleUploadDone}
-                      style={{
-                        padding: '8px 20px',
-                        background: 'var(--gold)',
-                        color: 'var(--black)',
-                        borderRadius: '8px',
-                        fontSize: '13px', fontWeight: 600,
-                        border: 'none', cursor: 'pointer',
-                      }}
-                    >
-                      Done
-                    </button>
+                    <button onClick={handleUploadDone} style={{
+                      padding: '8px 20px', background: 'var(--gold)', color: 'var(--black)',
+                      borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                      border: 'none', cursor: 'pointer',
+                    }}>Done</button>
                   )}
-                  <button
-                    onClick={handleUploadDone}
-                    style={{
-                      padding: '8px 16px',
-                      background: 'none',
-                      color: 'var(--text-muted)',
-                      borderRadius: '8px',
-                      fontSize: '12px', fontWeight: 400,
-                      border: '1px solid var(--border)', cursor: 'pointer',
-                    }}
-                  >
+                  <button onClick={handleUploadDone} style={{
+                    padding: '8px 14px', background: 'none', color: 'var(--text-muted)',
+                    borderRadius: '8px', fontSize: '12px', fontWeight: 400,
+                    border: '1px solid var(--border)', cursor: 'pointer',
+                  }}>
                     {referenceImages.length > 0 ? 'Skip remaining' : 'Skip for now'}
                   </button>
                 </div>
@@ -550,7 +495,7 @@ export default function ChatWindow({ onComplete }: Props) {
         ))}
 
         {loading && (
-          <div style={{ display: 'flex', gap: '6px', paddingLeft: '38px' }}>
+          <div style={{ display: 'flex', gap: '6px', paddingLeft: '34px' }}>
             {[0, 1, 2].map(i => (
               <div key={i} style={{
                 width: '7px', height: '7px', borderRadius: '50%', background: 'var(--gold-dim)',
@@ -566,8 +511,8 @@ export default function ChatWindow({ onComplete }: Props) {
       {/* Input bar */}
       {showInput && (
         <div style={{
-          padding: '14px 20px', borderTop: '1px solid var(--border)',
-          display: 'flex', gap: '10px', flexShrink: 0,
+          padding: '12px 16px', borderTop: '1px solid var(--border)',
+          display: 'flex', gap: '8px', flexShrink: 0,
         }}>
           <input
             value={input}
@@ -581,7 +526,7 @@ export default function ChatWindow({ onComplete }: Props) {
             }
             style={{
               flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)',
-              borderRadius: '8px', padding: '12px 16px', color: 'var(--text)',
+              borderRadius: '8px', padding: '11px 14px', color: 'var(--text)',
               fontSize: '14px', outline: 'none',
             }}
           />
@@ -589,7 +534,7 @@ export default function ChatWindow({ onComplete }: Props) {
             onClick={handleSend}
             disabled={!input.trim()}
             style={{
-              padding: '12px 20px',
+              padding: '11px 18px',
               background: input.trim() ? 'var(--gold)' : 'var(--surface-2)',
               color: input.trim() ? 'var(--black)' : 'var(--text-muted)',
               borderRadius: '8px', fontSize: '13px', fontWeight: 600,
