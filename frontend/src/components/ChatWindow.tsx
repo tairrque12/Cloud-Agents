@@ -1,11 +1,8 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
 // Updated:
-//   - Chips now support optional descriptions (sublabels)
-//   - Size step shows hours + est. price under each option so
-//     users understand Miguel's tier definitions before picking
-//   - Large explicitly marked "(Sleeves)" so sleeve work routes
-//     here rather than being confused with size
+//   - Large (Sleeves) chip now reads "4–5 sessions · Est. $800–$1,000 per session"
+//     so users understand sleeves are multi-session work BEFORE picking
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -18,9 +15,6 @@ interface Message {
   stepKey?: string
 }
 
-// ─── CHIP OPTION ──────────────────────────────────────────────────
-// A chip can be a plain string OR an object with a description.
-// String form stays backward-compatible with simple steps.
 type ChipOption = string | { label: string; description: string }
 
 interface Props {
@@ -49,13 +43,13 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
 }
 
 // ─── CHIPS ────────────────────────────────────────────────────────
-// Size: Miguel's actual tier definitions baked in as sublabels.
-// All prices marked "Est." so users know these are estimates.
+// Large (Sleeves) is multi-session work — users need to know that
+// upfront so the per-session pricing on the estimate doesn't surprise them.
 const CHIPS: Partial<Record<Step, ChipOption[]>> = {
   size: [
     { label: 'Small',           description: '1–2 hrs · Est. $100–$300' },
     { label: 'Medium',          description: '3–5 hrs · Est. $400–$600' },
-    { label: 'Large (Sleeves)', description: '6–8 hrs · Est. $800–$1,000' },
+    { label: 'Large (Sleeves)', description: '4–5 sessions · Est. $800–$1,000 per session' },
   ],
   placement: [
     'Forearm', 'Upper Arm', 'Full Arm Sleeve',
@@ -69,9 +63,6 @@ const CHIPS: Partial<Record<Step, ChipOption[]>> = {
   timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
 }
 
-// Helper — returns the underlying value sent to backend.
-// For descriptive chips we strip parenthetical hints so backend
-// gets a clean value (e.g. "Large (Sleeves)" → "Large").
 function chipValue(chip: ChipOption): string {
   const label = typeof chip === 'string' ? chip : chip.label
   return label.replace(/\s*\(.*?\)\s*/g, '').trim()
@@ -108,7 +99,6 @@ function parseAvailableDates(text: string): string[] {
   return dates
 }
 
-// ─── PRICING FALLBACK MAP ─────────────────────────────────────────
 const FALLBACK_PRICING: Record<string, { min: number; max: number }> = {
   small:       { min: 100, max: 300 },
   medium:      { min: 400, max: 600 },
@@ -390,7 +380,7 @@ export default function ChatWindow({ onComplete }: Props) {
                     >
                       <span style={{
                         fontWeight: isDescriptive ? 500 : 400,
-                        fontSize: isDescriptive ? '13px' : '13px',
+                        fontSize: '13px',
                       }}>
                         {label}
                       </span>

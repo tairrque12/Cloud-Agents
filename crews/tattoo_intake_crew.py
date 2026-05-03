@@ -1,7 +1,7 @@
 # crews/tattoo_intake_crew.py
 # Inkbook — Tattoo Intake Crew
 # Configured for: Miguel
-# Last updated: May 1, 2026
+# Last updated: May 2, 2026
 
 from crewai import Agent, Task, Crew, Process
 from dotenv import load_dotenv
@@ -74,6 +74,9 @@ Full Day — 6-8 hours — $800-1,000 — $100 deposit
 Full Sleeve — 4-5 sessions — $800-1,000 per session — $100 deposit per session
   Discounts may be available — Miguel discusses directly
   Never quote a specific discount amount
+  CRITICAL: Always communicate to clients that sleeves take
+  4-5 separate sessions and the price is PER SESSION, not total.
+  Half sleeves and leg sleeves follow the same multi-session model.
 """
 
 # ─────────────────────────────────────────
@@ -167,6 +170,9 @@ intake_classifier = Agent(
     SOFT_AVAILABILITY_INQUIRY — submission is just asking availability
     SOFT_SKIN_TONE_INQUIRY — Miguel's most common soft inquiry
     GUIDED_DISCOVERY_VAGUE — needs_help selected but answers are vague
+    SLEEVE_PLACEMENT — client picked a sleeve placement (Full Arm
+      Sleeve, Full Leg Sleeve, etc.) — Miguel should expect
+      multi-session work regardless of size selection
 
     A STRONG client can have many flags.
     A SOFT client can have zero flags.
@@ -202,7 +208,8 @@ pricing_agent = Agent(
     disclaimer that Miguel reviews every request personally and
     confirms the final price before anything is locked in.
     Never produce a price estimate without running the pricing tool.
-    Never use the budget field. Never quote a specific sleeve discount.""",
+    Never use the budget field. Never quote a specific sleeve discount.
+    For sleeve work, always communicate the multi-session nature.""",
     backstory=f"""You are the pricing specialist for Miguel's tattoo
     booking system. You have a deep understanding of how tattoo pricing
     works and how to communicate estimates in a way that sets honest
@@ -248,6 +255,16 @@ pricing_agent = Agent(
     If the client selects Small and the description is simple or vague,
     size selection wins. Do not upgrade.
 
+    SLEEVE PLACEMENT RULE — when placement is "Full Arm Sleeve",
+    "Full Leg Sleeve", or any value containing the word "sleeve":
+    - Treat this as Full Sleeve session type regardless of size selection
+    - Pricing is $800-1,000 PER SESSION, not total
+    - Total commitment is 4-5 sessions
+    - Always include MULTI_SESSION_REQUIRED flag for these cases
+    - The session_summary you pass downstream MUST mention "4-5 sessions"
+      and "per session pricing" so the Response Agent communicates this
+      clearly to the client
+
     Cover ups always get flagged. You never add a surcharge.
     Miguel assesses cover ups personally.
 
@@ -290,6 +307,9 @@ scheduling_agent = Agent(
     Day capacity rules by session type:
     Full Day — entire day blocked, no other appointments
     Full Sleeve — treated same as full day, entire day blocked
+      Note: Full Sleeve is multi-session. The dates you offer are
+      for the FIRST session only. Subsequent sessions get scheduled
+      in follow-up conversations after the first sitting.
     Half Day — single booking per day for MVP, flag that
       a second slot may be available if Miguel wants to open it
     Small — multiple may be possible on same day, flag this
@@ -329,7 +349,8 @@ response_agent = Agent(
     gives him a complete picture of the work he is walking into.
     The client message must never sound corporate or automated.
     The session summary must be specific enough that Miguel
-    walks into every approved session fully informed.""",
+    walks into every approved session fully informed.
+    For sleeve work, always make the multi-session reality clear.""",
     backstory=f"""You are the voice of Miguel's booking system.
     Everything you write on the client side comes from Miguel —
     his personality, his warmth, his directness, his casual
@@ -365,6 +386,21 @@ response_agent = Agent(
     DEPOSIT AND NEXT STEP — one clear sentence
     CLOSING — optional, short if included
 
+    SLEEVE-SPECIFIC RULE — when session_type is full_sleeve OR
+    placement contains "sleeve" (Full Arm Sleeve, Full Leg Sleeve, etc.):
+    The client MUST clearly understand three things from your message:
+    1. This is a multi-session piece — typically 4-5 sessions total
+    2. The price quoted is PER SESSION, not the total cost
+    3. Each session has its own deposit
+    Communicate these naturally in Miguel's voice — don't list them
+    as bullet points. Examples of how Miguel would phrase this:
+    "Full sleeves are usually 4-5 sessions, and you're looking at
+    $800-1,000 per session." Or: "Sleeves run multiple sessions —
+    typically 4 to 5 — and that price is per session." Or: "We'll
+    knock this out across 4-5 sessions. Each session runs about
+    $800-1,000." The point is honest expectation-setting in his
+    casual tone, not a legal disclaimer.
+
     The mandatory disclaimer must appear in every strong client
     message but written naturally as Miguel would say it:
     That's an estimate though, I always look everything over
@@ -374,6 +410,7 @@ response_agent = Agent(
     Session summary structure for Miguel:
     THE WORK — what the tattoo actually is, specific details
     SESSION TYPE — what kind of day this is for him
+      For sleeves: explicitly note "First of 4-5 sessions"
     COMPLEXITY NOTE — what he should know about executing this piece
     CLIENT NOTE — strong or soft, any relevant flags,
       what kind of client this appears to be
@@ -393,7 +430,8 @@ response_agent = Agent(
     service department. You never use corporate phrases.
     You never skip the session summary.
     You never skip the delimiters — they are required.
-    You never fake specificity in the acknowledgment.""",
+    You never fake specificity in the acknowledgment.
+    You NEVER omit the multi-session reality for sleeve work.""",
     verbose=True
 )
 
@@ -423,6 +461,7 @@ def create_intake_tasks(form_data: dict):
 
         PHASE 2 — Generate flags after classification is locked.
         Flags are informational only. They never change Phase 1.
+        Apply SLEEVE_PLACEMENT flag if placement contains "sleeve".
 
         PHASE 3 — Extract all fields and pass downstream.
 
@@ -450,25 +489,31 @@ def create_intake_tasks(form_data: dict):
         1. Run classify_session_type on the description field
         2. Compare with the classifier's session type recommendation
         3. Determine final session type — description wins if conflict
-        4. Run calculate_tattoo_price with the final session type
-        5. Build the personalized note referencing specific details
-        6. Apply all pricing flags
-        7. Pass complete structured output downstream
+        4. SLEEVE PLACEMENT OVERRIDE — if placement field contains
+           "sleeve" (Full Arm Sleeve, Full Leg Sleeve, etc.),
+           force session_type to full_sleeve and add
+           MULTI_SESSION_REQUIRED flag
+        5. Run calculate_tattoo_price with the final session type
+        6. Build the personalized note referencing specific details
+        7. Apply all pricing flags
+        8. Pass complete structured output downstream
 
         Critical rules:
         Never use the budget field — classification only
         Never omit the mandatory disclaimer
         Never quote a specific sleeve discount amount
         Always flag cover ups
-        Always flag size vs description mismatches""",
+        Always flag size vs description mismatches
+        For sleeve work, your output MUST clearly state the
+        4-5 session reality and per-session pricing.""",
         expected_output="""Complete pricing output containing:
         - Final session type determination with reasoning
         - Full formatted price estimate from the pricing tool
         - Deposit amount as a number
-        - Duration estimate
+        - Duration estimate (or session count for sleeves)
         - Mandatory disclaimer confirmed present
         - Personalized note referencing client's specific concept
-        - All pricing flags
+        - All pricing flags including MULTI_SESSION_REQUIRED for sleeves
         - One line summary for Miguel's Telegram card""",
         agent=pricing_agent,
         context=[classify_task]
@@ -484,6 +529,7 @@ def create_intake_tasks(form_data: dict):
         - Apply correct day capacity rule for session type
         - Never include appointment times — dates only
         - Always include calendar source note
+        - For sleeve work, dates offered are for first session only
         Client's preferred timing: {form_data.get('preferred_timing', 'flexible')}
         Available dates from Miguel's live Google Calendar:
         {', '.join(get_available_dates(form_data.get('size_selection', 'medium')))}""",
@@ -491,6 +537,7 @@ def create_intake_tasks(form_data: dict):
         - Exactly three date options as day and date only — no times
         - Day capacity flag for the session type
         - Note that Miguel confirms time personally after approving
+        - For sleeves, note that these are first-session dates
         - Calendar source note
         - One line schedule summary for Miguel's Telegram card""",
         agent=scheduling_agent,
@@ -519,10 +566,25 @@ def create_intake_tasks(form_data: dict):
         Short paragraphs. Line breaks between thoughts.
         Never sound corporate. Never use bullet points.
 
+        SLEEVE WORK REQUIREMENT — if session_type is full_sleeve OR
+        placement contains "sleeve":
+        Your client message MUST naturally communicate:
+        - This is a 4-5 session piece (multi-session work)
+        - The price ($800-1,000) is PER SESSION, not the total
+        - Each session has its own deposit
+        Phrase it casually in Miguel's voice. Never list these as
+        bullets — weave them into conversational sentences.
+        A client who reads your message about a sleeve and walks
+        away thinking the price is total OR thinking it's one session
+        is a FAILURE of this agent. Be honest and clear without
+        being clinical.
+
         OUTPUT 2 — SESSION SUMMARY FOR MIGUEL
         Plain language. Specific. Direct.
         Tell him what the work actually is.
         Tell him the session type and what that means for his day.
+        For sleeves: explicitly note "First of 4-5 sessions" and
+        flag MULTI_SESSION_REQUIRED.
         Tell him anything notable about executing this piece.
         Tell him what kind of client this appears to be.
         Make it specific enough that he walks in prepared.
@@ -538,11 +600,14 @@ def create_intake_tasks(form_data: dict):
         Includes opener, acknowledgment of their concept,
         estimate with natural disclaimer, three dates presented
         naturally, deposit amount, and clear next step.
+        For sleeves: clearly communicates 4-5 sessions
+        and per-session pricing in Miguel's casual voice.
         ---SESSION SUMMARY---
         A plain language briefing covering the work details,
         session type and day capacity, complexity notes,
         and client assessment. Specific enough that Miguel
-        walks into the approved session fully informed.""",
+        walks into the approved session fully informed.
+        For sleeves: notes "First of 4-5 sessions".""",
         agent=response_agent,
         context=[classify_task, pricing_task, scheduling_task]
     )
@@ -564,18 +629,9 @@ def run_tattoo_intake_crew(form_data: dict) -> tuple:
     - result_string: the full crew output as a string (response agent output)
     - classification: "STRONG" or "SOFT" extracted directly from
       tasks_output[0] — the classifier task output in isolation.
-
-    This is the correct architecture. str(crew_output) only returns
-    the final agent's output. Classification must be read from
-    tasks_output[0] which contains only the classifier's raw output,
-    with no other agent text mixed in.
-
-    The base64 image is stripped before passing to the crew.
-    The original form_data still has the full image for DB and Telegram.
     """
 
     # Strip base64 image — agents don't need it, it wastes tokens
-    # The original form_data retains the full image for DB + Telegram
     crew_data = {**form_data}
     if crew_data.get("reference_image"):
         crew_data["reference_image"] = "reference_image_uploaded"
@@ -599,9 +655,6 @@ def run_tattoo_intake_crew(form_data: dict) -> tuple:
     crew_output = crew.kickoff()
 
     # ── Extract classification from classifier task output directly ──
-    # tasks_output[0] is the classifier's isolated output string.
-    # No other agent's text is present. This is the correct source.
-    # Fallback to SOFT if anything goes wrong.
     classification = "SOFT"
     try:
         classifier_raw = str(crew_output.tasks_output[0]).upper()
@@ -620,42 +673,24 @@ def run_tattoo_intake_crew(form_data: dict) -> tuple:
 
 if __name__ == "__main__":
 
-    strong_client = {
-        "client_name": "Marcus",
+    sleeve_client = {
+        "client_name": "Steph",
         "contact": "+15125551234",
         "size_selection": "large",
-        "description": "Realistic black and gray wolf howling "
-                       "at the moon on my full outer arm. "
-                       "Native American inspired. Means a lot "
-                       "to me personally.",
-        "placement": "outer_arm",
+        "description": "Realistic portrait of my mother's face on a "
+                       "full arm sleeve. Black and gray. Tribute piece.",
+        "placement": "Full Arm Sleeve",
         "styles": ["realism", "blackwork"],
         "is_cover_up": False,
         "cover_up_description": None,
-        "budget_range": "500_1000",
-        "preferred_timing": "within_1_month",
-        "reference_image": None,
-        "idea_readiness": "knows_exactly",
-        "guided_discovery": None
-    }
-
-    soft_client = {
-        "client_name": "Jordan",
-        "contact": "jordan@email.com",
-        "size_selection": "large",
-        "description": "something cool on my back",
-        "placement": "back",
-        "styles": [],
-        "is_cover_up": False,
-        "cover_up_description": None,
-        "budget_range": "under_200",
+        "budget_range": "1000_plus",
         "preferred_timing": "flexible",
         "reference_image": None,
         "idea_readiness": "knows_exactly",
         "guided_discovery": None
     }
 
-    test_submission = strong_client
+    test_submission = sleeve_client
 
     print(f"\n{'='*60}")
     print("INKBOOK — TATTOO INTAKE CREW")
