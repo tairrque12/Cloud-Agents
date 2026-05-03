@@ -3,26 +3,23 @@
 # Configured for: Miguel
 # Last updated: May 3, 2026
 #
+# CALENDAR ARCHITECTURE — FIXED:
+# get_available_dates() is called in main.py BEFORE the crew fires.
+# The raw calendar dates are stored as a structured list and returned
+# directly in the API response as available_dates.
+# The frontend uses this list directly for the date picker — no parsing,
+# no agent interpretation, no drift.
+# The crew still receives the dates as context for prose generation
+# but the date picker is always anchored to the raw calendar output.
+#
 # TELEGRAM ARCHITECTURE:
-# Telegram fires once — on /api/miguel/confirm-date —
-# after the client either picks a date or signals that none work.
+# Telegram fires once — on /api/miguel/confirm-date.
 #
 # PRICING ARCHITECTURE:
-# Prices are anchored to PRICING_TIERS based on session type.
-# Never scraped from prose.
-#
-# DATE ARCHITECTURE:
-# "NEEDS_ALTERNATE" sentinel for clients whose preferred dates
-# don't match Miguel's calendar. Triggers personal followup.
+# Prices anchored to PRICING_TIERS by session type. Never scraped from prose.
 #
 # IMAGE ARCHITECTURE:
-# reference_images accepts a list of up to 3 base64 images.
-# reference_image (single) is kept for backward compatibility.
-# If reference_images is provided it takes precedence.
-# Only the first image is passed to the crew (agents don't need
-# raw image data — they receive a flag). All images are stored
-# in the DB via reference_image_url (first image) for now.
-# Full multi-image DB support is a future migration.
+# reference_images accepts up to 3 base64 images.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +36,7 @@ import traceback
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crews.tattoo_intake_crew import run_tattoo_intake_crew
+from tools.google_calendar_tool import get_available_dates
 from tools.telegram_notifier import (
     notify_miguel,
     send_telegram_message,
@@ -138,9 +136,7 @@ class IntakeRequest(BaseModel):
     cover_up_description: Optional[str] = None
     budget_range: str
     preferred_timing: str
-    # Multi-image support — takes precedence over reference_image
     reference_images: Optional[List[str]] = []
-    # Single image — kept for backward compatibility
     reference_image: Optional[str] = None
     idea_readiness: str
     guided_discovery: Optional[GuidedDiscovery] = None
@@ -178,37 +174,7 @@ def parse_crew_output(result: str) -> tuple:
     return client_message, session_summary
 
 
-def parse_available_dates(text: str) -> list:
-    DAY_NAMES = r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
-    MONTH_NAMES = (
-        r'(?:January|February|March|April|May|June|'
-        r'July|August|September|October|November|December)'
-    )
-    pattern = re.compile(
-        rf'({DAY_NAMES})[,\s·]+({MONTH_NAMES}\s+\d{{1,2}})',
-        re.IGNORECASE
-    )
-    dates = []
-    seen = set()
-    for match in pattern.finditer(text):
-        day = match.group(1).capitalize()
-        month_day = match.group(2).strip()
-        parts = month_day.split()
-        if len(parts) == 2:
-            month_day = f"{parts[0].capitalize()} {parts[1]}"
-        formatted = f"{day} · {month_day}"
-        if formatted not in seen:
-            seen.add(formatted)
-            dates.append(formatted)
-    return dates[:5]
-
-
-def resolve_reference_images(request: 'IntakeRequest') -> list:
-    """
-    Returns the canonical list of reference images.
-    reference_images (array) takes precedence over reference_image (single).
-    Filters out None/empty values.
-    """
+def resolve_reference_images(request: IntakeRequest) -> list:
     if request.reference_images:
         return [img for img in request.reference_images if img]
     if request.reference_image:
@@ -240,7 +206,7 @@ def extract_pricing(
         print(f">>> Sleeve placement detected ('{placement}') — upgraded to full_sleeve")
     elif session_type == "small" and "sleeve" in placement_lower:
         session_type = "full_sleeve"
-        print(f">>> Sleeve placement override — agent said small but placement is '{placement}'")
+        print(f">>> Sleeve placement override — placement is '{placement}'")
 
     if not session_type:
         size_to_tier = {
@@ -261,6 +227,27 @@ def extract_pricing(
         "deposit": tier["deposit"],
         "session_type": session_type,
     }
+
+
+def format_dates_for_frontend(raw_dates: list[str]) -> list[str]:
+    """
+    Converts calendar tool output ("Saturday May 10") to the
+    frontend's expected format ("Saturday · May 10").
+    Also normalizes any already-formatted strings.
+    """
+    formatted = []
+    for d in raw_dates:
+        if '·' in d:
+            formatted.append(d.strip())
+        else:
+            # Insert · between day name and month
+            # "Saturday May 10" → "Saturday · May 10"
+            parts = d.strip().split(' ', 1)
+            if len(parts) == 2:
+                formatted.append(f"{parts[0]} · {parts[1]}")
+            else:
+                formatted.append(d.strip())
+    return formatted
 
 
 async def get_or_create_client(db: AsyncSession, name: str, contact: str) -> Client:
@@ -315,7 +302,6 @@ async def store_intake(
         budget_range=budget_db,
         preferred_timing=timing_db,
         idea_readiness=request.idea_readiness,
-        # Store first image URL — full multi-image DB support is a future migration
         reference_image_url=primary_image_url,
         guided_meaning=guided.meaning if guided else None,
         guided_imagery=guided.imagery if guided else None,
@@ -370,6 +356,15 @@ async def intake(
     request: IntakeRequest,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Runs the crew and returns the estimate to the frontend.
+
+    CALENDAR FIX: get_available_dates() is called HERE in main.py
+    before the crew fires. The raw dates are returned directly to
+    the frontend as available_dates. The crew also receives them
+    as context strings for prose generation, but the date picker
+    always uses the structured list — never agent-parsed prose.
+    """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
         timing_db = TIMING_MAP.get(request.preferred_timing, "flexible")
@@ -380,12 +375,30 @@ async def intake(
         print(f">>> Mapped size: {request.size_selection} → {size_db}")
         print(f">>> Placement: {request.placement}")
 
-        # Resolve images — array takes precedence over single
+        # ── STEP 1: Fetch real calendar dates BEFORE crew fires ──
+        # This is the source of truth for the date picker.
+        # Raw format: ["Saturday May 10", "Thursday May 22", ...]
+        # These strings come directly from Miguel's Google Calendar.
+        # No agent touches them before they reach the frontend.
+        print(">>> Fetching calendar dates...")
+        raw_calendar_dates = get_available_dates(size_db)
+        print(f">>> Raw calendar dates: {raw_calendar_dates}")
+
+        # Format for frontend: "Saturday May 10" → "Saturday · May 10"
+        available_dates = format_dates_for_frontend(raw_calendar_dates)
+        print(f">>> Formatted dates for frontend: {available_dates}")
+
+        # ── STEP 2: Resolve images ───────────────────────────────
         all_images = resolve_reference_images(request)
         image_count = len(all_images)
         primary_image = all_images[0] if all_images else None
         print(f">>> Reference images: {image_count} uploaded")
 
+        # ── STEP 3: Build form data for crew ─────────────────────
+        # Pass the raw calendar dates as a comma-separated string
+        # so the scheduling agent can use them for prose generation.
+        # The agent's prose may rephrase them — that's fine because
+        # the date picker uses available_dates, not the prose.
         form_data = {
             "client_name": request.client_name,
             "contact": request.contact,
@@ -397,16 +410,18 @@ async def intake(
             "cover_up_description": request.cover_up_description,
             "budget_range": budget_db,
             "preferred_timing": timing_db,
-            # Pass image count flag to crew — agents don't need raw data
             "reference_image": "reference_image_uploaded" if image_count > 0 else None,
             "reference_image_count": image_count,
             "idea_readiness": request.idea_readiness,
             "guided_discovery": request.guided_discovery.dict()
-                if request.guided_discovery else None
+                if request.guided_discovery else None,
+            # Pass calendar dates to crew for prose context
+            "calendar_dates": raw_calendar_dates,
         }
 
         short_id = str(uuid.uuid4())[:8].upper()
 
+        # ── STEP 4: Fire crew ────────────────────────────────────
         print(">>> Firing crew...")
         result, classification = run_tattoo_intake_crew(form_data)
         print(">>> Crew complete")
@@ -414,15 +429,11 @@ async def intake(
 
         client_message, session_summary = parse_crew_output(result)
         pricing = extract_pricing(result, size_db, request.placement)
+
         print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
               f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
 
-        available_dates = parse_available_dates(client_message)
-        if not available_dates:
-            available_dates = parse_available_dates(result)
-        print(f">>> Available dates: {available_dates}")
-
-        # ── Database ──────────────────────────
+        # ── STEP 5: Database ─────────────────────────────────────
         artist = await get_miguel(db)
         client = await get_or_create_client(
             db=db,
@@ -448,6 +459,7 @@ async def intake(
         client.total_intakes = (client.total_intakes or 0) + 1
         await db.commit()
 
+        # ── STEP 6: Memory store ─────────────────────────────────
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -466,12 +478,15 @@ async def intake(
         }
 
         print(">>> Intake stored. Waiting for client to select date.")
+
+        # ── STEP 7: Return — available_dates is the structured ───
+        # calendar output, NOT parsed from agent prose.
         return {
             "status": "success",
             "message": "Estimate ready",
             "intake_id": short_id,
             "client_message": client_message,
-            "available_dates": available_dates,
+            "available_dates": available_dates,   # ← direct from calendar
             "preferred_timing": timing_db,
             "price_min": pricing["price_min"],
             "price_max": pricing["price_max"],
