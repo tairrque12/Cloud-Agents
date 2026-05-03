@@ -3,25 +3,26 @@
 # Configured for: Miguel
 # Last updated: May 3, 2026
 #
-# CALENDAR ARCHITECTURE — FIXED:
+# CALENDAR ARCHITECTURE:
 # get_available_dates() is called in main.py BEFORE the crew fires.
-# The raw calendar dates are stored as a structured list and returned
-# directly in the API response as available_dates.
-# The frontend uses this list directly for the date picker — no parsing,
-# no agent interpretation, no drift.
+# Raw dates returned directly to frontend as available_dates.
 #
 # TELEGRAM ARCHITECTURE:
-# Telegram fires once — on /api/miguel/confirm-date.
+# Telegram fires once — on /api/miguel/confirm-date (background task).
 #
 # PRICING ARCHITECTURE:
 # Prices anchored to PRICING_TIERS by session type. Never scraped from prose.
 #
 # IMAGE ARCHITECTURE:
-# reference_images accepts up to 3 base64 images. Stored in intake_store
-# at intake time, then sent to Miguel's Telegram when the client
-# confirms their date. Miguel sees the photos before reading the card.
+# reference_images accepts up to 3 base64 images. Stored in intake_store,
+# sent to Miguel's Telegram as photos when client confirms date.
+#
+# COVERAGE ARCHITECTURE:
+# coverage field added (optional, from new frontend coverage chips).
+# Passed to crew as context. Shown on Miguel's Telegram card.
+# Replaces ambiguous size (small/medium/large) with placement + coverage.
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -131,6 +132,10 @@ class IntakeRequest(BaseModel):
     size_selection: str
     description: str
     placement: str
+    # NEW: coverage replaces ambiguous size chips on frontend.
+    # Values: "Just a section", "Most of it", "The whole thing", "full" (auto for sleeves)
+    # Optional for backward compatibility with any existing integrations.
+    coverage: Optional[str] = None
     styles: Optional[List[str]] = []
     is_cover_up: bool = False
     cover_up_description: Optional[str] = None
@@ -230,11 +235,6 @@ def extract_pricing(
 
 
 def format_dates_for_frontend(raw_dates: list[str]) -> list[str]:
-    """
-    Converts calendar tool output ("Saturday May 10") to the
-    frontend's expected format ("Saturday · May 10").
-    Also normalizes any already-formatted strings.
-    """
     formatted = []
     for d in raw_dates:
         if '·' in d:
@@ -336,6 +336,38 @@ async def store_approval(
 
 
 # ─────────────────────────────────────────
+# BACKGROUND TASK WRAPPER
+# ─────────────────────────────────────────
+
+def send_telegram_in_background(
+    classification: str,
+    client_name: str,
+    client_contact: str,
+    client_message: str,
+    session_summary: str,
+    intake_id: str,
+    selected_date: Optional[str],
+    reference_images: List[str],
+):
+    try:
+        print(f">>> [Background] Starting Telegram delivery for {intake_id}")
+        notify_miguel(
+            classification=classification,
+            client_name=client_name,
+            client_contact=client_contact,
+            client_message=client_message,
+            session_summary=session_summary,
+            intake_id=intake_id,
+            selected_date=selected_date,
+            reference_images=reference_images,
+        )
+        print(f">>> [Background] Telegram delivery complete for {intake_id}")
+    except Exception as e:
+        print(f">>> [Background] Telegram delivery failed for {intake_id}: {e}")
+        traceback.print_exc()
+
+
+# ─────────────────────────────────────────
 # ROUTES
 # ─────────────────────────────────────────
 
@@ -354,16 +386,6 @@ async def intake(
     request: IntakeRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Runs the crew and returns the estimate to the frontend.
-
-    CALENDAR FIX: get_available_dates() is called HERE in main.py
-    before the crew fires. The raw dates are returned directly to
-    the frontend as available_dates.
-
-    IMAGE STORAGE: reference_images are stored in intake_store
-    so they can be sent to Miguel's Telegram when the date is confirmed.
-    """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
         timing_db = TIMING_MAP.get(request.preferred_timing, "flexible")
@@ -373,30 +395,32 @@ async def intake(
         print(f">>> Mapped timing: {request.preferred_timing} → {timing_db}")
         print(f">>> Mapped size: {request.size_selection} → {size_db}")
         print(f">>> Placement: {request.placement}")
+        print(f">>> Coverage: {request.coverage}")
 
-        # ── STEP 1: Fetch real calendar dates BEFORE crew fires ──
+        # ── STEP 1: Calendar dates ───────────────────────────────
         print(">>> Fetching calendar dates...")
         raw_calendar_dates = get_available_dates(size_db)
         print(f">>> Raw calendar dates: {raw_calendar_dates}")
-
         available_dates = format_dates_for_frontend(raw_calendar_dates)
         print(f">>> Formatted dates for frontend: {available_dates}")
 
         # ── STEP 2: Resolve images ───────────────────────────────
-        # all_images is the list we'll forward to Telegram later.
-        # Held in intake_store until /confirm-date fires.
         all_images = resolve_reference_images(request)
         image_count = len(all_images)
         primary_image = all_images[0] if all_images else None
         print(f">>> Reference images: {image_count} uploaded")
 
         # ── STEP 3: Build form data for crew ─────────────────────
+        # Coverage is passed to the crew so it can reference it
+        # in the client message and session summary prose.
+        # Miguel will see: "Placement: Forearm — Most of it" in the card.
         form_data = {
             "client_name": request.client_name,
             "contact": request.contact,
             "size_selection": size_db,
             "description": request.description,
             "placement": request.placement,
+            "coverage": request.coverage or "not specified",
             "styles": request.styles,
             "is_cover_up": request.is_cover_up,
             "cover_up_description": request.cover_up_description,
@@ -451,9 +475,8 @@ async def intake(
         await db.commit()
 
         # ── STEP 6: Memory store ─────────────────────────────────
-        # IMPORTANT: reference_images stored here so confirm-date
-        # endpoint can forward them to Telegram. Without this,
-        # Miguel would never see the photos the client uploaded.
+        # Coverage stored so it can be included in Telegram card
+        # session summary context alongside placement.
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -465,7 +488,9 @@ async def intake(
             "pricing": pricing,
             "preferred_timing": timing_db,
             "image_count": image_count,
-            "reference_images": all_images,   # ← needed for Telegram photos
+            "reference_images": all_images,
+            "placement": request.placement,
+            "coverage": request.coverage or "not specified",
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
@@ -474,7 +499,6 @@ async def intake(
 
         print(">>> Intake stored. Waiting for client to select date.")
 
-        # ── STEP 7: Return ───────────────────────────────────────
         return {
             "status": "success",
             "message": "Estimate ready",
@@ -496,11 +520,14 @@ async def intake(
 @app.post("/api/miguel/confirm-date")
 async def confirm_date(
     request: DateConfirmRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Triggers the Telegram notification to Miguel.
-    Sends reference images first (as photos), then the text card.
+    Triggers Telegram notification in background so client gets
+    confirmation screen immediately without waiting for photo uploads.
+    Coverage and placement are included in the session_summary
+    the crew already generated, so Miguel sees them on the card.
     """
     try:
         short_id = request.intake_id
@@ -517,22 +544,27 @@ async def confirm_date(
         else:
             print(f">>> Date confirmed: {short_id} → {selected_date}")
 
-        print(">>> Sending Telegram notification...")
-        try:
-            notify_miguel(
-                classification=intake["classification"],
-                client_name=intake["client_name"],
-                client_contact=intake["client_contact"],
-                client_message=intake["client_message"],
-                session_summary=intake["session_summary"],
-                intake_id=short_id,
-                selected_date=selected_date,
-                # Forward stored images so Miguel sees them in Telegram
-                reference_images=intake.get("reference_images", []),
-            )
-            print(">>> Telegram sent")
-        except Exception as telegram_error:
-            print(f">>> Telegram failed (non-fatal): {str(telegram_error)}")
+        # Build an enriched session summary that explicitly shows
+        # placement + coverage at the top so Miguel sees it immediately
+        # without having to read the full prose.
+        placement = intake.get("placement", "not specified")
+        coverage = intake.get("coverage", "not specified")
+        coverage_line = f"Placement: {placement} — {coverage}\n\n"
+        enriched_summary = coverage_line + intake["session_summary"]
+
+        print(">>> Scheduling Telegram notification (background)...")
+        background_tasks.add_task(
+            send_telegram_in_background,
+            classification=intake["classification"],
+            client_name=intake["client_name"],
+            client_contact=intake["client_contact"],
+            client_message=intake["client_message"],
+            session_summary=enriched_summary,
+            intake_id=short_id,
+            selected_date=selected_date,
+            reference_images=intake.get("reference_images", []),
+        )
+        print(">>> Telegram task queued — returning to client")
 
         return {
             "status": "success",

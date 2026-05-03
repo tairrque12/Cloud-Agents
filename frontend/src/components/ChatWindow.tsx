@@ -1,11 +1,13 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
-// Mobile UX fixes:
-//   - Shortened intro message — fits on one screen without scrolling
-//   - Size chips: full-width stacked cards on mobile
-//   - Budget + timeline chips: full-width stacked on mobile
-//   - Placement chips: tighter pill wrap
-//   - Multi-image upload: up to 3 reference images
+//
+// COVERAGE CHIPS UPDATE:
+// Removed "size" step (small/medium/large was ambiguous).
+// Replaced with "coverage" step that fires after placement.
+// Question is dynamic: "How much of your [placement] are you looking to cover?"
+// Full sleeve/leg placements skip coverage entirely (already implied).
+// Backend receives coverage + placement to determine session type.
+// Miguel sees placement + coverage on his Telegram card.
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -26,19 +28,67 @@ interface Props {
 }
 
 type Step =
-  | 'description' | 'size' | 'placement' | 'style' | 'coverup'
+  | 'description' | 'placement' | 'coverage' | 'style' | 'coverup'
   | 'reference' | 'budget' | 'timeline' | 'name' | 'contact' | 'processing'
 
 const STEP_SEQUENCE: Step[] = [
-  'description', 'size', 'placement', 'style', 'coverup',
+  'description', 'placement', 'coverage', 'style', 'coverup',
   'reference', 'budget', 'timeline', 'name', 'contact', 'processing'
 ]
 
-// Steps whose chips should render full-width stacked on mobile
-const FULL_WIDTH_CHIP_STEPS: Set<Step> = new Set(['size', 'budget', 'timeline'])
+// Placements where coverage is already implied — skip the coverage step
+const SKIP_COVERAGE_PLACEMENTS = new Set([
+  'Full Arm Sleeve',
+  'Full Leg Sleeve',
+])
+
+const FULL_WIDTH_CHIP_STEPS: Set<Step> = new Set(['coverage', 'budget', 'timeline'])
+
+// Coverage chips — placement label is interpolated into the question dynamically
+const COVERAGE_CHIPS: ChipOption[] = [
+  { label: 'Just a section',    description: 'Partial coverage · smaller piece' },
+  { label: 'Most of it',        description: 'Majority coverage · medium to large piece' },
+  { label: 'The whole thing',   description: 'Full coverage · larger commitment' },
+]
+
+// Coverage → session type mapping used for fallback pricing
+// placement is also factored in for back/chest/torso
+const COVERAGE_TO_SESSION: Record<string, Record<string, string>> = {
+  'just a section': {
+    default: 'small',
+    back: 'half_day',
+    chest: 'half_day',
+    torso: 'half_day',
+  },
+  'most of it': {
+    default: 'half_day',
+    back: 'full_day',
+    chest: 'full_day',
+    torso: 'full_day',
+  },
+  'the whole thing': {
+    default: 'full_day',
+    back: 'full_day',
+    chest: 'full_day',
+    torso: 'full_day',
+  },
+}
+
+function getCoverageSession(coverage: string, placement: string): string {
+  const coverageKey = coverage.toLowerCase()
+  const placementKey = placement.toLowerCase()
+  const map = COVERAGE_TO_SESSION[coverageKey] ?? {}
+  // Check if placement matches a specific key
+  for (const key of Object.keys(map)) {
+    if (key !== 'default' && placementKey.includes(key)) {
+      return map[key]
+    }
+  }
+  return map['default'] ?? 'half_day'
+}
 
 const STEP_QUESTIONS: Partial<Record<Step, string>> = {
-  size: "How big are you thinking?",
+  // coverage question is generated dynamically in advanceStep
   placement: 'Where on your body do you want this tattoo?',
   style: 'What style are you drawn to?',
   coverup: 'Is this a cover up of an existing tattoo?',
@@ -50,11 +100,6 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
 }
 
 const CHIPS: Partial<Record<Step, ChipOption[]>> = {
-  size: [
-    { label: 'Small',  description: '1–2 hrs · Est. $100–$300' },
-    { label: 'Medium', description: '3–5 hrs · Est. $400–$600' },
-    { label: 'Large',  description: '6–8 hrs · Est. $800–$1,000' },
-  ],
   placement: [
     'Forearm', 'Upper Arm', 'Full Arm Sleeve',
     'Chest', 'Back',
@@ -106,8 +151,8 @@ function parseAvailableDates(text: string): string[] {
 
 const FALLBACK_PRICING: Record<string, { min: number; max: number }> = {
   small:       { min: 100, max: 300 },
-  medium:      { min: 400, max: 600 },
-  large:       { min: 800, max: 1000 },
+  half_day:    { min: 400, max: 600 },
+  full_day:    { min: 800, max: 1000 },
   full_sleeve: { min: 800, max: 1000 },
 }
 
@@ -115,7 +160,6 @@ export default function ChatWindow({ onComplete }: Props) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      // Shortened intro — fits on one mobile screen without scrolling
       content: "Hey! I'm Miguel, tattoo artist based in Austin, TX — black and grey realism is my specialty. What are you looking to get done?",
     }
   ])
@@ -140,15 +184,40 @@ export default function ChatWindow({ onComplete }: Props) {
     setMessages(prev => [...prev, { role: 'user', content }])
   }
 
-  const advanceStep = (currentStep: Step, answer: string, newAnswersOverride?: Record<string, string>) => {
+  const advanceStep = (
+    currentStep: Step,
+    answer: string,
+    newAnswersOverride?: Record<string, string>
+  ) => {
     const newAnswers = { ...(newAnswersOverride ?? answers), [currentStep]: answer }
     setAnswers(newAnswers)
+
     const idx = STEP_SEQUENCE.indexOf(currentStep)
-    const nextStep = STEP_SEQUENCE[idx + 1] as Step
+    let nextStep = STEP_SEQUENCE[idx + 1] as Step
+
+    // Skip coverage step for full sleeve/leg placements
+    if (currentStep === 'placement' && SKIP_COVERAGE_PLACEMENTS.has(answer)) {
+      // Set coverage to 'full' implicitly so backend has the value
+      newAnswers['coverage'] = 'full'
+      nextStep = 'style'
+    }
+
     setStep(nextStep)
+
     setTimeout(() => {
       if (nextStep === 'processing') {
         submitToBackend(newAnswers)
+      } else if (nextStep === 'coverage') {
+        // Dynamic coverage question based on placement
+        const placement = newAnswers['placement'] ?? 'that area'
+        const placementLower = placement.toLowerCase()
+        // Build a natural question
+        const question = `How much of your ${placementLower} are you looking to cover?`
+        addAssistantMessage(question, {
+          chips: COVERAGE_CHIPS,
+          stepKey: 'coverage',
+          fullWidthChips: true,
+        })
       } else {
         const question = STEP_QUESTIONS[nextStep]!
         const chips = CHIPS[nextStep]
@@ -215,11 +284,29 @@ export default function ChatWindow({ onComplete }: Props) {
     setTimeout(() => addAssistantMessage('📅 Checking artist availability… ✓'), 1200)
     setTimeout(() => addAssistantMessage('💰 Preparing your estimate… ✓'), 2000)
 
-    const rawSize = finalAnswers.size?.toLowerCase() ?? 'small'
-    const sizeKey = rawSize.replace(' ', '_')
     const placement = finalAnswers.placement ?? 'not specified'
+    const coverage = finalAnswers.coverage ?? 'not specified'
+
+    // Determine session type from placement + coverage
     const isSleevePlacement = placement.toLowerCase().includes('sleeve')
-    const fallbackKey = isSleevePlacement ? 'full_sleeve' : sizeKey
+    const isLegSleevePlace = placement.toLowerCase().includes('full leg')
+
+    let sessionType: string
+    if (isSleevePlacement || isLegSleevePlace) {
+      sessionType = 'full_sleeve'
+    } else {
+      sessionType = getCoverageSession(coverage, placement)
+    }
+
+    // Map session type to size_selection for backend compatibility
+    const sizeMap: Record<string, string> = {
+      small: 'small',
+      half_day: 'medium',
+      full_day: 'large',
+      full_sleeve: 'full sleeve',
+    }
+    const sizeSelection = sizeMap[sessionType] ?? 'medium'
+    const fallbackKey = sessionType === 'full_sleeve' ? 'full_sleeve' : sessionType
 
     try {
       const res = await fetch('https://inkbook-4tlr.onrender.com/api/miguel/intake', {
@@ -229,9 +316,13 @@ export default function ChatWindow({ onComplete }: Props) {
           client_name: finalAnswers.name ?? '',
           contact: finalAnswers.contact ?? '',
           description: finalAnswers.description ?? '',
-          size_selection: rawSize,
+          size_selection: sizeSelection,
           placement,
-          styles: finalAnswers.style ? [finalAnswers.style.toLowerCase().replace(' ', '_')] : [],
+          // Send coverage explicitly so crew and Telegram card have it
+          coverage,
+          styles: finalAnswers.style
+            ? [finalAnswers.style.toLowerCase().replace(' ', '_')]
+            : [],
           is_cover_up: finalAnswers.coverup === 'Yes',
           cover_up_description: null,
           budget_range: finalAnswers.budget ?? '',
@@ -246,7 +337,7 @@ export default function ChatWindow({ onComplete }: Props) {
       const data = await res.json()
       const message = data.client_message ?? ''
 
-      const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
+      const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.half_day
       const priceMin: number = typeof data.price_min === 'number' ? data.price_min : fallback.min
       const priceMax: number = typeof data.price_max === 'number' ? data.price_max : fallback.max
       const intakeId: string = data.intake_id ?? ''
@@ -266,12 +357,15 @@ export default function ChatWindow({ onComplete }: Props) {
 
       const estimatedDate = availableDates[0]
       setTimeout(() => {
-        onComplete({ priceMin, priceMax, estimatedDate, availableDates, intakeId, preferredTiming,
-          summary: message || 'Miguel will review your request and confirm shortly.' })
+        onComplete({
+          priceMin, priceMax, estimatedDate, availableDates,
+          intakeId, preferredTiming,
+          summary: message || 'Miguel will review your request and confirm shortly.',
+        })
       }, 2800)
 
     } catch {
-      const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.small
+      const fallback = FALLBACK_PRICING[fallbackKey] ?? FALLBACK_PRICING.half_day
       setTimeout(() => {
         onComplete({
           priceMin: fallback.min, priceMax: fallback.max,
