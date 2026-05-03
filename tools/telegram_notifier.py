@@ -1,7 +1,12 @@
 # tools/telegram_notifier.py
 # Inkbook — Telegram Notification Tool
-# Sends Miguel his approval card for every intake
+# Sends Miguel his approval card for every confirmed booking request
 # Last updated: May 2, 2026
+#
+# ARCHITECTURE NOTE:
+# This only fires from /api/miguel/confirm-date — after the client
+# has selected a date and tapped Send to Miguel. Never on raw intake.
+# One card. One notification. Complete information every time.
 
 import os
 import requests
@@ -36,12 +41,7 @@ def format_miguel_card(
     else:
         header = "🟡 SOFT CLIENT — Exploring, not ready yet"
 
-    # Show selected date prominently if the client has chosen one,
-    # otherwise show a pending note so Miguel knows to wait for it.
-    if selected_date:
-        date_line = f"📅 Selected Date: {selected_date}"
-    else:
-        date_line = "📅 Date: Pending client selection"
+    date_line = f"📅 Selected Date: {selected_date}" if selected_date else "📅 Date: Not selected"
 
     card = f"""
 {header}
@@ -67,10 +67,10 @@ Contact: {client_contact}
 
 🔖 INTAKE ID: {intake_id}
 
-Reply with:
-✅ APPROVE
-✏️ ADJUST
-❌ DECLINE
+Reply with your decision + intake ID:
+✅ APPROVE {intake_id}
+✏️ ADJUST {intake_id}
+❌ DECLINE {intake_id}
     """.strip()
 
     return card
@@ -97,8 +97,6 @@ def send_telegram_message(
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    # Telegram max message length is 4096 characters
-    # Split into chunks if needed
     MAX_LENGTH = 4000
     chunks = [message[i:i+MAX_LENGTH] for i in range(0, len(message), MAX_LENGTH)]
 
@@ -116,6 +114,7 @@ def send_telegram_message(
 
 # ─────────────────────────────────────────
 # MIGUEL NOTIFICATION
+# Called only from /api/miguel/confirm-date
 # ─────────────────────────────────────────
 
 def notify_miguel(
@@ -127,15 +126,6 @@ def notify_miguel(
     intake_id: str,
     selected_date: Optional[str] = None
 ):
-    """
-    Sends Miguel's approval card to Telegram.
-
-    selected_date is optional — it will be None on the initial
-    intake notification (client hasn't picked yet) and populated
-    when /api/miguel/confirm-date fires after the client confirms.
-    """
-    # Truncate individual sections to keep card readable
-    # Full card with all fields stays under Telegram limits
     client_message_trimmed = client_message[:1500] if len(client_message) > 1500 else client_message
     session_summary_trimmed = session_summary[:1000] if len(session_summary) > 1000 else session_summary
 
@@ -150,7 +140,7 @@ def notify_miguel(
     )
 
     send_telegram_message(card)
-    print(f"Telegram notification sent to Miguel for {client_name}")
+    print(f"Telegram notification sent to Miguel for {client_name} — date: {selected_date}")
 
 
 # ─────────────────────────────────────────
@@ -164,11 +154,6 @@ def send_client_confirmation(
     client_message: str,
     intake_id: str
 ):
-    """
-    Sends confirmation to client after Miguel approves.
-    Uses Twilio SMS if configured.
-    Falls back to terminal print for MVP.
-    """
     confirmation = f"""Hey {client_name}!
 
 Miguel reviewed your request and you're confirmed.
@@ -207,9 +192,6 @@ def send_client_decline(
     client_contact: str,
     client_name: str
 ):
-    """
-    Sends polite decline to client.
-    """
     decline_message = f"""Hey {client_name}
 
 Thanks for reaching out. Unfortunately Miguel
@@ -247,9 +229,6 @@ def send_client_custom_message(
     client_name: str,
     custom_message: str
 ):
-    """
-    Sends Miguel's adjusted message to client.
-    """
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
     twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
     twilio_number = os.getenv("TWILIO_PHONE_NUMBER")

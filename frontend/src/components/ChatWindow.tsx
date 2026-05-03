@@ -179,8 +179,9 @@ export default function ChatWindow({ onComplete }: Props) {
 
       // ── Price extraction ──────────────────────────────────────
       const allPrices = [...message.matchAll(/\$(\d{1,4})/g)].map((m: RegExpMatchArray) => parseInt(m[1]))
-      const priceMin = allPrices.length >= 2 ? Math.min(...allPrices) : 800
-      const priceMax = allPrices.length >= 2 ? Math.max(...allPrices) : 1000
+      const validPrices = allPrices.filter((p: number) => p >= 50)
+      const priceMin = validPrices.length >= 2 ? Math.min(...validPrices) : 800
+      const priceMax = validPrices.length >= 2 ? Math.max(...validPrices) : 1000
 
       // ── Intake ID ─────────────────────────────────────────────
       // Passed to EstimateCard so it can call /api/miguel/confirm-date

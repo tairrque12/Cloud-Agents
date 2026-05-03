@@ -2,6 +2,12 @@
 # Inkbook — FastAPI Backend
 # Configured for: Miguel
 # Last updated: May 2, 2026
+#
+# TELEGRAM ARCHITECTURE:
+# Telegram does NOT fire on intake submission.
+# It fires once — on /api/miguel/confirm-date —
+# after the client selects a date and taps Send to Miguel.
+# One complete card. No partial notifications. No race conditions.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -108,7 +114,7 @@ class IntakeRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     intake_id: str
     decision: str
-    selected_date: Optional[str] = None       # client's chosen date from date picker
+    selected_date: Optional[str] = None
     adjusted_price: Optional[str] = None
     adjusted_dates: Optional[str] = None
     adjusted_message: Optional[str] = None
@@ -122,7 +128,6 @@ class DateConfirmRequest(BaseModel):
 # ─────────────────────────────────────────
 
 intake_store = {}
-miguel_last_intake_id = {}
 
 # ─────────────────────────────────────────
 # HELPERS
@@ -142,34 +147,23 @@ def parse_crew_output(result: str) -> tuple:
 def parse_available_dates(text: str) -> list:
     """
     Extract all day + date strings from any text block.
-    Works on both client_message prose and raw scheduling agent output.
-
-    Matches patterns like:
-      Saturday May 10
-      Thursday, May 15
-      Saturday · May 24
-
-    Returns a deduplicated list of formatted strings: "Saturday · May 10"
-    Capped at 5 results.
+    Matches: "Saturday May 10", "Thursday, May 15", "Saturday · May 24"
+    Returns deduplicated list capped at 5.
     """
     DAY_NAMES = r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
     MONTH_NAMES = (
         r'(?:January|February|March|April|May|June|'
         r'July|August|September|October|November|December)'
     )
-
     pattern = re.compile(
         rf'({DAY_NAMES})[,\s·]+({MONTH_NAMES}\s+\d{{1,2}})',
         re.IGNORECASE
     )
-
     dates = []
     seen = set()
     for match in pattern.finditer(text):
-        # Normalize capitalization
         day = match.group(1).capitalize()
         month_day = match.group(2).strip()
-        # Capitalize month name
         parts = month_day.split()
         if len(parts) == 2:
             month_day = f"{parts[0].capitalize()} {parts[1]}"
@@ -177,24 +171,15 @@ def parse_available_dates(text: str) -> list:
         if formatted not in seen:
             seen.add(formatted)
             dates.append(formatted)
-
     return dates[:5]
-
-
-# NOTE: detect_classification has been removed.
-# Classification is now extracted directly from crew_output.tasks_output[0]
-# inside run_tattoo_intake_crew in tattoo_intake_crew.py.
-# run_tattoo_intake_crew now returns a tuple: (result_string, classification)
 
 
 async def get_or_create_client(db: AsyncSession, name: str, contact: str) -> Client:
     result = await db.execute(select(Client).where(Client.contact == contact))
     client = result.scalar_one_or_none()
-
     if client:
         client.name = name
         return client
-
     client = Client(
         name=name,
         contact=contact,
@@ -208,10 +193,8 @@ async def get_or_create_client(db: AsyncSession, name: str, contact: str) -> Cli
 async def get_miguel(db: AsyncSession) -> Artist:
     result = await db.execute(select(Artist).where(Artist.name == "Miguel"))
     artist = result.scalar_one_or_none()
-
     if not artist:
         raise HTTPException(status_code=500, detail="Artist record not found.")
-
     return artist
 
 
@@ -228,7 +211,6 @@ async def store_intake(
     size_db: str
 ) -> Intake:
     guided = request.guided_discovery
-
     intake = Intake(
         short_id=short_id,
         artist_id=artist_id,
@@ -250,7 +232,6 @@ async def store_intake(
         raw_crew_output=raw_crew_output,
         status="pending"
     )
-
     db.add(intake)
     await db.flush()
     return intake
@@ -265,7 +246,6 @@ async def store_approval(
     adjusted_message: Optional[str] = None
 ) -> Approval:
     from datetime import datetime, timezone
-
     approval = Approval(
         intake_id=intake_id,
         artist_id=artist_id,
@@ -275,7 +255,6 @@ async def store_approval(
         adjusted_message=adjusted_message,
         notification_channel="sms"
     )
-
     db.add(approval)
     await db.flush()
     return approval
@@ -300,6 +279,11 @@ async def intake(
     request: IntakeRequest,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Runs the crew and returns the estimate to the frontend.
+    Does NOT send Telegram. Telegram fires only after the client
+    selects a date and hits confirm via /api/miguel/confirm-date.
+    """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
         timing_db = TIMING_MAP.get(request.preferred_timing, "flexible")
@@ -328,11 +312,6 @@ async def intake(
 
         short_id = str(uuid.uuid4())[:8].upper()
 
-        # ── Run crew ──────────────────────────
-        # run_tattoo_intake_crew returns a tuple:
-        # (result_string, classification)
-        # Classification comes from tasks_output[0] — the classifier
-        # agent's isolated output. This is the correct source of truth.
         print(">>> Firing crew...")
         result, classification = run_tattoo_intake_crew(form_data)
         print(">>> Crew complete")
@@ -340,28 +319,20 @@ async def intake(
 
         client_message, session_summary = parse_crew_output(result)
 
-        # ── Extract available dates ────────────
-        # Parse from client_message prose — the scheduling agent
-        # has already injected real calendar dates into the response.
-        # parse_available_dates finds all day+date patterns and
-        # returns them as a clean deduplicated list.
+        # Extract available dates from client_message prose
         available_dates = parse_available_dates(client_message)
         if not available_dates:
-            # Fallback: parse from the full raw crew output
             available_dates = parse_available_dates(result)
         print(f">>> Available dates extracted: {available_dates}")
 
         # ── Database ──────────────────────────
         print(">>> Writing to database...")
         artist = await get_miguel(db)
-        print(f">>> Got artist: {artist.name}")
-
         client = await get_or_create_client(
             db=db,
             name=request.client_name,
             contact=request.contact
         )
-        print(f">>> Got/created client: {client.name}")
 
         intake_record = await store_intake(
             db=db,
@@ -378,49 +349,32 @@ async def intake(
         print(f">>> Stored intake: {short_id}")
 
         client.total_intakes = (client.total_intakes or 0) + 1
-
-        # ── Telegram ──────────────────────────
-        # Initial notification — no selected_date yet.
-        # Client hasn't picked a date on the frontend at this point.
-        # A second Telegram message fires via /api/miguel/confirm-date
-        # once the client selects and confirms their date.
-        print(">>> Sending Telegram notification...")
-        try:
-            notify_miguel(
-                classification=classification,
-                client_name=request.client_name,
-                client_contact=request.contact,
-                client_message=client_message,
-                session_summary=session_summary,
-                intake_id=short_id,
-                selected_date=None
-            )
-            print(">>> Telegram sent")
-        except Exception as telegram_error:
-            print(f">>> Telegram failed (non-fatal): {str(telegram_error)}")
+        await db.commit()
 
         # ── Memory store ──────────────────────
+        # Store everything needed for Telegram card at confirm-date time.
+        # No Telegram fired here — client hasn't chosen a date yet.
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
             "client_message": client_message,
+            "session_summary": session_summary,
+            "classification": classification,
             "available_dates": available_dates,
-            "selected_date": None,              # set when client confirms via /confirm-date
+            "selected_date": None,
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
             "status": "pending"
         }
 
-        miguel_last_intake_id["current"] = short_id
-
-        print(">>> Returning success response")
+        print(">>> Intake stored. Waiting for client to select date.")
         return {
             "status": "success",
-            "message": "Request submitted to Miguel for review",
+            "message": "Estimate ready",
             "intake_id": short_id,
             "client_message": client_message,
-            "available_dates": available_dates      # frontend uses this for date picker
+            "available_dates": available_dates
         }
 
     except Exception as e:
@@ -432,11 +386,15 @@ async def intake(
 
 
 @app.post("/api/miguel/confirm-date")
-async def confirm_date(request: DateConfirmRequest):
+async def confirm_date(
+    request: DateConfirmRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Called when the client selects a date and taps 'Send to Miguel'
-    on the confirmation screen. Stores their selected date and fires
-    a follow-up Telegram message to Miguel with the chosen date.
+    Called when the client selects a date and taps Send to Miguel.
+    This is the ONLY place Telegram fires.
+    Sends one complete card with everything: estimate, message,
+    session summary, classification, and selected date.
     """
     try:
         short_id = request.intake_id
@@ -451,22 +409,27 @@ async def confirm_date(request: DateConfirmRequest):
         intake_store[short_id]["selected_date"] = selected_date
         print(f">>> Date confirmed: {short_id} → {selected_date}")
 
-        # Fire follow-up Telegram to Miguel with the chosen date
+        # ── Fire single complete Telegram card ────────────────
+        # This is the only Telegram notification in the system.
+        # Miguel gets one card with everything he needs to decide.
+        print(">>> Sending Telegram notification...")
         try:
-            send_telegram_message(
-                f"📅 DATE SELECTED\n\n"
-                f"Client: {intake['client_name']}\n"
-                f"Intake: {short_id}\n"
-                f"Selected Date: {selected_date}\n\n"
-                f"Reply ✅ APPROVE to confirm this booking."
+            notify_miguel(
+                classification=intake["classification"],
+                client_name=intake["client_name"],
+                client_contact=intake["client_contact"],
+                client_message=intake["client_message"],
+                session_summary=intake["session_summary"],
+                intake_id=short_id,
+                selected_date=selected_date
             )
-            print(">>> Date confirmation sent to Telegram")
+            print(">>> Telegram sent")
         except Exception as telegram_error:
-            print(f">>> Telegram date notification failed (non-fatal): {str(telegram_error)}")
+            print(f">>> Telegram failed (non-fatal): {str(telegram_error)}")
 
         return {
             "status": "success",
-            "message": "Date confirmed and sent to Miguel",
+            "message": "Request sent to Miguel",
             "intake_id": short_id,
             "selected_date": selected_date
         }
@@ -505,26 +468,45 @@ async def telegram_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Handles Miguel's replies from Telegram.
+    Parses the intake ID directly from his message text.
+    Format: APPROVE C7D3828A / DECLINE C7D3828A / ADJUST C7D3828A
+    No global pointer — each reply is self-contained and concurrent-safe.
+    """
     try:
         body = await request.json()
         message = body.get("message", {})
-        text = message.get("text", "").strip().upper()
+        text = message.get("text", "").strip()
+        text_upper = text.upper()
         chat_id = str(message.get("chat", {}).get("id", ""))
 
         if chat_id != os.getenv("MIGUEL_CHAT_ID"):
             return {"status": "ignored"}
 
-        short_id = miguel_last_intake_id.get("current")
+        # ── Parse intake ID from message ──────────────────────
+        # Miguel replies: "APPROVE C7D3828A"
+        # Extract the ID by checking each word against intake_store
+        short_id = None
+        for word in text.split():
+            candidate = word.upper().strip()
+            if candidate in intake_store:
+                short_id = candidate
+                break
 
         if not short_id or short_id not in intake_store:
             send_telegram_message(
-                "No active intake found. A new booking request needs to come in first."
+                "No matching intake found.\n\n"
+                "Reply with your decision and the intake ID:\n"
+                "✅ APPROVE C7D3828A\n"
+                "✏️ ADJUST C7D3828A\n"
+                "❌ DECLINE C7D3828A"
             )
-            return {"status": "no_active_intake"}
+            return {"status": "no_matching_intake"}
 
         intake = intake_store[short_id]
 
-        if "APPROVE" in text or "✅" in text:
+        if "APPROVE" in text_upper:
             send_client_confirmation(
                 client_contact=intake["client_contact"],
                 client_name=intake["client_name"],
@@ -550,7 +532,7 @@ async def telegram_webhook(
             intake_store[short_id]["status"] = "approved"
             send_telegram_message(f"✅ Confirmed. Message sent to {intake['client_name']}.")
 
-        elif "DECLINE" in text or "❌" in text:
+        elif "DECLINE" in text_upper:
             send_client_decline(
                 client_contact=intake["client_contact"],
                 client_name=intake["client_name"]
@@ -574,10 +556,11 @@ async def telegram_webhook(
             intake_store[short_id]["status"] = "declined"
             send_telegram_message(f"❌ Decline sent to {intake['client_name']}.")
 
-        elif "ADJUST" in text or "✏️" in text:
+        elif "ADJUST" in text_upper:
             send_telegram_message(
                 f"✏️ What would you like to change for {intake['client_name']}?\n\n"
-                f"Type your updated message and I will send it."
+                f"Type your updated message and I will send it.\n"
+                f"Include the intake ID: {short_id}"
             )
             intake_store[short_id]["status"] = "adjusting"
 
