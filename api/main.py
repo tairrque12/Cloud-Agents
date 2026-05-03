@@ -4,17 +4,19 @@
 # Last updated: May 2, 2026
 #
 # TELEGRAM ARCHITECTURE:
-# Telegram does NOT fire on intake submission.
-# It fires once — on /api/miguel/confirm-date —
-# after the client selects a date and taps Send to Miguel.
+# Telegram fires once — on /api/miguel/confirm-date —
+# after the client either picks a date or signals that none work.
 # One complete card. No partial notifications. No race conditions.
 #
 # PRICING ARCHITECTURE:
-# Prices are NEVER scraped from prose. They are extracted from
-# the pricing agent's isolated output (tasks_output[1]) using
-# anchored regex patterns that match Miguel's rate structure.
-# This guarantees the price shown to the client matches the
-# price quoted in the AI message.
+# Prices are anchored to Miguel's PRICING_TIERS based on the session
+# type assigned by the pricing agent. Never scraped from prose.
+#
+# DATE ARCHITECTURE:
+# Client either selects one of the offered dates OR signals that
+# none of them work. The "none work" path passes a sentinel value
+# of "NEEDS_ALTERNATE" so Miguel sees a flagged card and reaches
+# out personally. Single source of truth: Miguel's Google Calendar.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +56,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────
+# SENTINEL VALUES
+# ─────────────────────────────────────────
+
+NEEDS_ALTERNATE_DATES = "NEEDS_ALTERNATE"
 
 # ─────────────────────────────────────────
 # FIELD MAPPINGS
@@ -96,8 +104,6 @@ SIZE_MAP = {
 
 # ─────────────────────────────────────────
 # MIGUEL'S PRICING TIERS — SOURCE OF TRUTH
-# Used as a hard fallback if pricing extraction fails.
-# These mirror the rates defined in tattoo_intake_crew.py
 # ─────────────────────────────────────────
 
 PRICING_TIERS = {
@@ -141,7 +147,7 @@ class ApprovalRequest(BaseModel):
 
 class DateConfirmRequest(BaseModel):
     intake_id: str
-    selected_date: str
+    selected_date: str   # date string OR "NEEDS_ALTERNATE" sentinel
 
 # ─────────────────────────────────────────
 # IN-MEMORY STORE
@@ -165,11 +171,6 @@ def parse_crew_output(result: str) -> tuple:
 
 
 def parse_available_dates(text: str) -> list:
-    """
-    Extract day + date strings from any text block.
-    Matches: "Saturday May 10", "Thursday, May 15", "Saturday · May 24"
-    Returns deduplicated list capped at 5.
-    """
     DAY_NAMES = r'(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)'
     MONTH_NAMES = (
         r'(?:January|February|March|April|May|June|'
@@ -196,24 +197,12 @@ def parse_available_dates(text: str) -> list:
 
 def extract_pricing(pricing_agent_output: str, size_selection: str) -> dict:
     """
-    Extract structured pricing data from the pricing agent's isolated output.
-
-    Strategy (in order of preference):
-      1. Match Miguel's exact rate format: "$100-300", "$800-1,000"
-      2. Detect session type keywords (Small / Half Day / Full Day / Full Sleeve)
-         and map to PRICING_TIERS
-      3. Hard fallback to PRICING_TIERS based on the client's size_selection
-
-    This is anchored on session type, not on whatever numbers happen to
-    appear in the prose. That guarantees the price shown to the client
-    always matches the actual session tier.
-
-    Returns: {"price_min": int, "price_max": int, "deposit": int, "session_type": str}
+    Extract structured pricing data anchored to PRICING_TIERS.
+    Detects session type from pricing agent output, falls back to
+    client size_selection. Never scrapes raw numbers from prose.
     """
     text = pricing_agent_output.lower()
 
-    # ── Step 1: detect session type from agent output ──────────────
-    # The pricing agent always declares the session type explicitly.
     session_type = None
     if "full sleeve" in text:
         session_type = "full_sleeve"
@@ -224,7 +213,6 @@ def extract_pricing(pricing_agent_output: str, size_selection: str) -> dict:
     elif "small" in text:
         session_type = "small"
 
-    # ── Step 2: fall back to client's size_selection if agent unclear ──
     if not session_type:
         size_to_tier = {
             "small": "small",
@@ -234,7 +222,6 @@ def extract_pricing(pricing_agent_output: str, size_selection: str) -> dict:
         }
         session_type = size_to_tier.get(size_selection, "small")
 
-    # ── Step 3: pull from PRICING_TIERS — single source of truth ────
     tier = PRICING_TIERS[session_type]
 
     print(f">>> Pricing extraction: session_type={session_type}, "
@@ -356,10 +343,7 @@ async def intake(
     """
     Runs the crew and returns the estimate to the frontend.
     Does NOT send Telegram. Telegram fires only after the client
-    selects a date and hits confirm via /api/miguel/confirm-date.
-
-    Returns structured pricing alongside the prose message so the
-    frontend never has to scrape numbers from text.
+    selects a date (or signals none work) via /api/miguel/confirm-date.
     """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
@@ -396,16 +380,10 @@ async def intake(
 
         client_message, session_summary = parse_crew_output(result)
 
-        # ── Extract structured pricing ────────────────────────
-        # Pull pricing from the full crew output. The pricing agent
-        # always declares its session type in its output text.
-        # extract_pricing maps that to Miguel's actual rate tiers
-        # so the displayed price always matches what was quoted.
         pricing = extract_pricing(result, size_db)
         print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
               f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
 
-        # ── Extract available dates ───────────────────────────
         available_dates = parse_available_dates(client_message)
         if not available_dates:
             available_dates = parse_available_dates(result)
@@ -480,8 +458,13 @@ async def confirm_date(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Called when the client selects a date and taps Send to Miguel.
-    This is the ONLY place Telegram fires.
+    Called when the client selects a date OR signals none of the
+    offered dates work. This is the ONLY place Telegram fires.
+
+    selected_date can be:
+      - A real date string ("Saturday · May 10")
+      - The sentinel "NEEDS_ALTERNATE" — meaning client tapped
+        "None of these dates work." Miguel will reach out personally.
     """
     try:
         short_id = request.intake_id
@@ -491,10 +474,14 @@ async def confirm_date(
             raise HTTPException(status_code=404, detail="Intake not found.")
 
         intake = intake_store[short_id]
-
         intake_store[short_id]["selected_date"] = selected_date
-        print(f">>> Date confirmed: {short_id} → {selected_date}")
 
+        if selected_date == NEEDS_ALTERNATE_DATES:
+            print(f">>> Client signaled NONE OF THE DATES WORK: {short_id}")
+        else:
+            print(f">>> Date confirmed: {short_id} → {selected_date}")
+
+        # ── Fire single complete Telegram card ────────────────
         print(">>> Sending Telegram notification...")
         try:
             notify_miguel(
@@ -514,7 +501,8 @@ async def confirm_date(
             "status": "success",
             "message": "Request sent to Miguel",
             "intake_id": short_id,
-            "selected_date": selected_date
+            "selected_date": selected_date,
+            "needs_alternate": selected_date == NEEDS_ALTERNATE_DATES
         }
 
     except HTTPException:
@@ -554,7 +542,6 @@ async def telegram_webhook(
     """
     Handles Miguel's replies from Telegram.
     Format: APPROVE C7D3828A / DECLINE C7D3828A / ADJUST C7D3828A
-    Concurrent-safe — parses ID directly from message text.
     """
     try:
         body = await request.json()
@@ -592,7 +579,6 @@ async def telegram_webhook(
                 client_message=intake["client_message"],
                 intake_id=short_id
             )
-
             await store_approval(
                 db=db,
                 intake_id=uuid.UUID(intake["intake_db_id"]),
@@ -600,14 +586,11 @@ async def telegram_webhook(
                 decision="approved",
                 client_message_sent=intake["client_message"]
             )
-            result = await db.execute(
-                select(Intake).where(Intake.short_id == short_id)
-            )
+            result = await db.execute(select(Intake).where(Intake.short_id == short_id))
             intake_record = result.scalar_one_or_none()
             if intake_record:
                 intake_record.status = "approved"
             await db.commit()
-
             intake_store[short_id]["status"] = "approved"
             send_telegram_message(f"✅ Confirmed. Message sent to {intake['client_name']}.")
 
@@ -616,7 +599,6 @@ async def telegram_webhook(
                 client_contact=intake["client_contact"],
                 client_name=intake["client_name"]
             )
-
             await store_approval(
                 db=db,
                 intake_id=uuid.UUID(intake["intake_db_id"]),
@@ -624,14 +606,11 @@ async def telegram_webhook(
                 decision="declined",
                 client_message_sent="Decline message sent."
             )
-            result = await db.execute(
-                select(Intake).where(Intake.short_id == short_id)
-            )
+            result = await db.execute(select(Intake).where(Intake.short_id == short_id))
             intake_record = result.scalar_one_or_none()
             if intake_record:
                 intake_record.status = "declined"
             await db.commit()
-
             intake_store[short_id]["status"] = "declined"
             send_telegram_message(f"❌ Decline sent to {intake['client_name']}.")
 
@@ -651,7 +630,6 @@ async def telegram_webhook(
                     client_name=intake["client_name"],
                     custom_message=custom_msg
                 )
-
                 await store_approval(
                     db=db,
                     intake_id=uuid.UUID(intake["intake_db_id"]),
@@ -660,14 +638,11 @@ async def telegram_webhook(
                     client_message_sent=custom_msg,
                     adjusted_message=custom_msg
                 )
-                result = await db.execute(
-                    select(Intake).where(Intake.short_id == short_id)
-                )
+                result = await db.execute(select(Intake).where(Intake.short_id == short_id))
                 intake_record = result.scalar_one_or_none()
                 if intake_record:
                     intake_record.status = "adjusted"
                 await db.commit()
-
                 intake_store[short_id]["status"] = "approved"
                 send_telegram_message(
                     f"✅ Your updated message was sent to {intake['client_name']}."

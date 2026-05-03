@@ -1,12 +1,11 @@
 # tools/telegram_notifier.py
 # Inkbook — Telegram Notification Tool
-# Sends Miguel his approval card for every confirmed booking request
 # Last updated: May 2, 2026
 #
-# ARCHITECTURE NOTE:
-# This only fires from /api/miguel/confirm-date — after the client
-# has selected a date and tapped Send to Miguel. Never on raw intake.
-# One card. One notification. Complete information every time.
+# Fires only from /api/miguel/confirm-date — after the client either
+# selects a date or signals that none of the offered dates work.
+# When selected_date == "NEEDS_ALTERNATE", the card flags this
+# prominently so Miguel knows to reach out personally.
 
 import os
 import requests
@@ -22,6 +21,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MIGUEL_CHAT_ID = os.getenv("MIGUEL_CHAT_ID")
 
+NEEDS_ALTERNATE_DATES = "NEEDS_ALTERNATE"
+
 # ─────────────────────────────────────────
 # MESSAGE FORMATTER
 # ─────────────────────────────────────────
@@ -36,12 +37,27 @@ def format_miguel_card(
     selected_date: Optional[str] = None
 ) -> str:
 
-    if "STRONG" in classification.upper():
+    # ── Header — flag alternate-date requests at the very top ──
+    # Override the standard STRONG/SOFT header when client signals
+    # none of the offered dates work. Miguel sees this first.
+    if selected_date == NEEDS_ALTERNATE_DATES:
+        header = "🟠 NEEDS ALTERNATE DATES — Reach out personally"
+    elif "STRONG" in classification.upper():
         header = "🟢 STRONG CLIENT — Ready to book"
     else:
         header = "🟡 SOFT CLIENT — Exploring, not ready yet"
 
-    date_line = f"📅 Selected Date: {selected_date}" if selected_date else "📅 Date: Not selected"
+    # ── Date line ──────────────────────────────────────────────
+    if selected_date == NEEDS_ALTERNATE_DATES:
+        date_line = (
+            "📅 ⚠️ NONE OF THE OFFERED DATES WORK\n"
+            "    Client is waiting for you to reach out and "
+            "coordinate a date that fits their schedule."
+        )
+    elif selected_date:
+        date_line = f"📅 Selected Date: {selected_date}"
+    else:
+        date_line = "📅 Date: Not selected"
 
     card = f"""
 {header}
@@ -49,6 +65,7 @@ def format_miguel_card(
 👤 CLIENT
 Name: {client_name}
 Contact: {client_contact}
+
 {date_line}
 
 ─────────────────────────
@@ -78,9 +95,6 @@ Reply with your decision + intake ID:
 
 # ─────────────────────────────────────────
 # CORE SEND FUNCTION
-# Uses Telegram HTTP API directly
-# No async — works inside FastAPI cleanly
-# Splits messages over 4096 chars automatically
 # ─────────────────────────────────────────
 
 def send_telegram_message(
@@ -114,7 +128,6 @@ def send_telegram_message(
 
 # ─────────────────────────────────────────
 # MIGUEL NOTIFICATION
-# Called only from /api/miguel/confirm-date
 # ─────────────────────────────────────────
 
 def notify_miguel(
@@ -140,12 +153,15 @@ def notify_miguel(
     )
 
     send_telegram_message(card)
-    print(f"Telegram notification sent to Miguel for {client_name} — date: {selected_date}")
+
+    if selected_date == NEEDS_ALTERNATE_DATES:
+        print(f"Telegram sent: {client_name} — NEEDS ALTERNATE DATES")
+    else:
+        print(f"Telegram sent: {client_name} — date: {selected_date}")
 
 
 # ─────────────────────────────────────────
 # CLIENT NOTIFICATION FUNCTIONS
-# Called after Miguel approves/declines
 # ─────────────────────────────────────────
 
 def send_client_confirmation(
@@ -266,21 +282,12 @@ if __name__ == "__main__":
         client_message="""What's up Marcus
 
 That wolf piece on the outer arm sounds clean.
-You're looking at $800-1,000 for that —
-full day session. That's an estimate though,
-I always check everything personally before
-locking in the final price.
+You're looking at $800-1,000 for that.
 
-I've got Saturday May 17, Thursday May 29,
-or Saturday June 7 open.
-
-$100 deposit locks your spot. Let me know
-which date works.""",
+$100 deposit locks your spot.""",
         session_summary="""Full day session — realistic black and gray wolf,
-full outer arm, Native American inspired.
-6+ hours. No other bookings this day.
-Strong client, clear vision, no flags.""",
+full outer arm. 6+ hours.""",
         intake_id="TEST-001",
-        selected_date="Saturday · May 17"
+        selected_date="NEEDS_ALTERNATE"
     )
     print("Done. Check Telegram.")

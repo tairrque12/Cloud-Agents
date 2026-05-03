@@ -1,6 +1,6 @@
 // src/components/EstimateCard.tsx
 // Inkbook — Estimate → Date Selection → Confirmation flow
-// Updated: calls /api/miguel/confirm-date with intakeId + selectedDate
+// Updated: adds "None of these dates work" path
 
 import { useState } from 'react'
 import type { Estimate } from '../App'
@@ -12,17 +12,25 @@ interface Props {
 
 type Screen = 'estimate' | 'date-select' | 'confirmation'
 
+const NEEDS_ALTERNATE = 'NEEDS_ALTERNATE'
+
 export default function EstimateCard({ estimate, onReset }: Props) {
   const [screen, setScreen] = useState<Screen>('estimate')
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [needsAlternate, setNeedsAlternate] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
   const [sending, setSending] = useState(false)
 
   // ─── CONFIRM HANDLER ──────────────────────────────────────────
-  // Fires /api/miguel/confirm-date then shows success state.
-  // Non-fatal — UI confirms even if the network call blips.
+  // Fires /api/miguel/confirm-date with either the selected date
+  // or the NEEDS_ALTERNATE sentinel. Non-fatal — UI confirms even
+  // if the network call blips.
   const handleConfirm = async () => {
-    if (!selectedDate || sending) return
+    if (sending) return
+    if (!needsAlternate && !selectedDate) return
+
+    const dateToSend = needsAlternate ? NEEDS_ALTERNATE : (selectedDate as string)
+
     setSending(true)
     try {
       await fetch('https://inkbook-4tlr.onrender.com/api/miguel/confirm-date', {
@@ -30,15 +38,21 @@ export default function EstimateCard({ estimate, onReset }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           intake_id: estimate.intakeId,
-          selected_date: selectedDate,
+          selected_date: dateToSend,
         }),
       })
     } catch {
-      // non-fatal — continue to success screen regardless
+      // non-fatal — continue to success regardless
     } finally {
       setSending(false)
       setConfirmed(true)
     }
+  }
+
+  // Helper for the date-select screen — pick a date and clear alternate flag
+  const pickDate = (date: string) => {
+    setSelectedDate(date)
+    setNeedsAlternate(false)
   }
 
   // ─── ESTIMATE SCREEN ──────────────────────────────────────────
@@ -149,6 +163,8 @@ export default function EstimateCard({ estimate, onReset }: Props) {
       ? estimate.availableDates
       : [estimate.estimatedDate]
 
+    const canContinue = needsAlternate || selectedDate !== null
+
     return (
       <div style={{
         minHeight: '100vh',
@@ -183,7 +199,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
         <p style={{
           color: 'var(--text-muted)', fontSize: '13px',
           marginBottom: '40px', textAlign: 'center',
-          lineHeight: 1.6, maxWidth: '300px',
+          lineHeight: 1.6, maxWidth: '320px',
         }}>
           These are Miguel's real open dates based on his current calendar.
         </p>
@@ -193,11 +209,11 @@ export default function EstimateCard({ estimate, onReset }: Props) {
           display: 'flex', flexDirection: 'column', gap: '12px',
         }}>
           {dates.map((date, i) => {
-            const isSelected = selectedDate === date
+            const isSelected = !needsAlternate && selectedDate === date
             return (
               <button
                 key={i}
-                onClick={() => setSelectedDate(date)}
+                onClick={() => pickDate(date)}
                 style={{
                   width: '100%', padding: '20px 24px',
                   background: isSelected ? 'rgba(201,168,76,0.08)' : 'var(--surface)',
@@ -229,24 +245,81 @@ export default function EstimateCard({ estimate, onReset }: Props) {
               </button>
             )
           })}
+
+          {/* ── None of these dates work option ─────────────────── */}
+          <div style={{
+            margin: '8px 0 4px',
+            display: 'flex', alignItems: 'center',
+            gap: '12px',
+          }}>
+            <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+            <span style={{ color: 'var(--text-muted)', fontSize: '11px', letterSpacing: '0.1em' }}>OR</span>
+            <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+          </div>
+
+          <button
+            onClick={() => {
+              setNeedsAlternate(true)
+              setSelectedDate(null)
+            }}
+            style={{
+              width: '100%', padding: '20px 24px',
+              background: needsAlternate ? 'rgba(201,168,76,0.08)' : 'var(--surface)',
+              border: `1px solid ${needsAlternate ? 'var(--gold)' : 'var(--border)'}`,
+              borderRadius: '2px',
+              color: needsAlternate ? 'var(--gold)' : 'var(--text)',
+              fontSize: '15px', fontWeight: 300,
+              cursor: 'pointer',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              transition: 'all 0.15s ease',
+              textAlign: 'left',
+            }}
+            onMouseEnter={e => {
+              if (!needsAlternate) e.currentTarget.style.borderColor = 'rgba(201,168,76,0.4)'
+            }}
+            onMouseLeave={e => {
+              if (!needsAlternate) e.currentTarget.style.borderColor = 'rgba(201,168,76,0.15)'
+            }}
+          >
+            <span>None of these dates work for me</span>
+            <span style={{
+              width: '18px', height: '18px', borderRadius: '50%',
+              border: `1px solid ${needsAlternate ? 'var(--gold)' : 'var(--border)'}`,
+              background: needsAlternate ? 'var(--gold)' : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0, transition: 'all 0.15s ease',
+            }}>
+              {needsAlternate && <span style={{ fontSize: '10px', color: 'var(--black)', fontWeight: 700 }}>✓</span>}
+            </span>
+          </button>
+
+          {needsAlternate && (
+            <p style={{
+              color: 'var(--text-muted)', fontSize: '12px',
+              lineHeight: 1.6, marginTop: '4px',
+              padding: '0 4px', textAlign: 'center',
+            }}>
+              No problem. Miguel will review your request and reach out personally to coordinate a date that works for you.
+            </p>
+          )}
         </div>
 
         <button
-          onClick={() => selectedDate && setScreen('confirmation')}
-          disabled={!selectedDate}
+          onClick={() => canContinue && setScreen('confirmation')}
+          disabled={!canContinue}
           style={{
             marginTop: '32px', padding: '14px 40px',
-            background: selectedDate ? 'var(--gold)' : 'var(--surface)',
-            color: selectedDate ? 'var(--black)' : 'var(--text-muted)',
+            background: canContinue ? 'var(--gold)' : 'var(--surface)',
+            color: canContinue ? 'var(--black)' : 'var(--text-muted)',
             fontSize: '12px', letterSpacing: '0.12em',
             textTransform: 'uppercase', fontWeight: 700,
             borderRadius: '2px',
-            border: `1px solid ${selectedDate ? 'var(--gold)' : 'var(--border)'}`,
-            cursor: selectedDate ? 'pointer' : 'default',
+            border: `1px solid ${canContinue ? 'var(--gold)' : 'var(--border)'}`,
+            cursor: canContinue ? 'pointer' : 'default',
             transition: 'all 0.2s ease',
           }}
         >
-          Confirm Date →
+          {needsAlternate ? 'Continue →' : 'Confirm Date →'}
         </button>
       </div>
     )
@@ -297,7 +370,15 @@ export default function EstimateCard({ estimate, onReset }: Props) {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <ConfirmRow label="Price Range" value={`$${estimate.priceMin}–$${estimate.priceMax}`} gold />
-              <ConfirmRow label="Selected Date" value={selectedDate ?? ''} gold />
+              {needsAlternate ? (
+                <ConfirmRow
+                  label="Date"
+                  value="Awaiting Miguel's outreach"
+                  gold
+                />
+              ) : (
+                <ConfirmRow label="Selected Date" value={selectedDate ?? ''} gold />
+              )}
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
                 <p style={{ color: 'var(--text-muted)', fontSize: '11px', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: '8px' }}>
                   Miguel's Response
@@ -311,9 +392,11 @@ export default function EstimateCard({ estimate, onReset }: Props) {
 
           <p style={{
             color: 'var(--text-muted)', fontSize: '12px', marginTop: '20px',
-            textAlign: 'center', lineHeight: 1.6, maxWidth: '320px',
+            textAlign: 'center', lineHeight: 1.6, maxWidth: '340px',
           }}>
-            This will send your booking request to Miguel on Telegram for his final review. He'll confirm the price and lock in your date.
+            {needsAlternate
+              ? "Miguel will review your request and reach out personally to find a date that works for you."
+              : "This will send your booking request to Miguel on Telegram for his final review. He'll confirm the price and lock in your date."}
           </p>
 
           <button
@@ -349,7 +432,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
         </>
       ) : (
         // ─── SUCCESS STATE ─────────────────────────────────────
-        <div style={{ textAlign: 'center', maxWidth: '360px' }}>
+        <div style={{ textAlign: 'center', maxWidth: '380px' }}>
           <div style={{
             width: '56px', height: '56px', borderRadius: '50%',
             border: '2px solid var(--gold)',
@@ -371,13 +454,20 @@ export default function EstimateCard({ estimate, onReset }: Props) {
             Miguel has your request.
           </p>
 
-          <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.7, marginBottom: '8px' }}>
-            You selected <span style={{ color: 'var(--gold)' }}>{selectedDate}</span>.
-          </p>
-
-          <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.7, marginBottom: '36px' }}>
-            He'll review everything and reach out to confirm your appointment and deposit details.
-          </p>
+          {needsAlternate ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.7, marginBottom: '36px' }}>
+              He'll review everything and reach out personally to coordinate a date that works for your schedule.
+            </p>
+          ) : (
+            <>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.7, marginBottom: '8px' }}>
+                You selected <span style={{ color: 'var(--gold)' }}>{selectedDate}</span>.
+              </p>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.7, marginBottom: '36px' }}>
+                He'll review everything and reach out to confirm your appointment and deposit details.
+              </p>
+            </>
+          )}
 
           <button
             onClick={onReset}
