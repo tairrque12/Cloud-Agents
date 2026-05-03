@@ -1,8 +1,10 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
 // Updated:
-//   - Large (Sleeves) chip now reads "4–5 sessions · Est. $800–$1,000 per session"
-//     so users understand sleeves are multi-session work BEFORE picking
+//   - Size chips: Large no longer mentions sleeves (Miguel's feedback)
+//   - Input placeholder shortened to fit mobile without clipping
+//   - Multi-image upload: up to 3 reference images with previews
+//     and an "+ Add another" button after the first upload
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -35,7 +37,7 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
   placement: 'Where on your body do you want this tattoo?',
   style: 'Got it — and what style are you drawn to?',
   coverup: 'Is this a cover up of an existing tattoo?',
-  reference: "Upload a reference image below. A photo helps Miguel get a more accurate quote and makes sure he's fully prepared to execute your vision on tattoo day.",
+  reference: "Upload up to 3 reference images. Photos help Miguel give a more accurate quote and prepare for your session.",
   budget: "What's your rough budget for this piece?",
   timeline: 'When are you looking to get this done?',
   name: "What's your name?",
@@ -43,13 +45,13 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
 }
 
 // ─── CHIPS ────────────────────────────────────────────────────────
-// Large (Sleeves) is multi-session work — users need to know that
-// upfront so the per-session pricing on the estimate doesn't surprise them.
+// Size: Small / Medium / Large — clean, no sleeve mention
+// Miguel confirmed: "Small medium large is good bro"
 const CHIPS: Partial<Record<Step, ChipOption[]>> = {
   size: [
-    { label: 'Small',           description: '1–2 hrs · Est. $100–$300' },
-    { label: 'Medium',          description: '3–5 hrs · Est. $400–$600' },
-    { label: 'Large (Sleeves)', description: '4–5 sessions · Est. $800–$1,000 per session' },
+    { label: 'Small',  description: '1–2 hrs · Est. $100–$300' },
+    { label: 'Medium', description: '3–5 hrs · Est. $400–$600' },
+    { label: 'Large',  description: '6–8 hrs · Est. $800–$1,000' },
   ],
   placement: [
     'Forearm', 'Upper Arm', 'Full Arm Sleeve',
@@ -62,6 +64,8 @@ const CHIPS: Partial<Record<Step, ChipOption[]>> = {
   budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
   timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
 }
+
+const MAX_IMAGES = 3
 
 function chipValue(chip: ChipOption): string {
   const label = typeof chip === 'string' ? chip : chip.label
@@ -116,8 +120,11 @@ export default function ChatWindow({ onComplete }: Props) {
   const [step, setStep] = useState<Step>('description')
   const [input, setInput] = useState('')
   const [answers, setAnswers] = useState<Record<string, string>>({})
-  const [referenceImage, setReferenceImage] = useState<string | null>(null)
-  const [imageUploaded, setImageUploaded] = useState(false)
+
+  // ─── Multi-image state ────────────────────────────────────────
+  const [referenceImages, setReferenceImages] = useState<string[]>([])
+  const [uploadDone, setUploadDone] = useState(false)
+
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -170,18 +177,44 @@ export default function ChatWindow({ onComplete }: Props) {
     advanceStep(step, value)
   }
 
+  // ─── Image upload handler ─────────────────────────────────────
+  // Reads new file(s), appends to referenceImages up to MAX_IMAGES.
+  // Does NOT auto-advance — user taps "Done" to proceed.
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      setReferenceImage(dataUrl)
-      setImageUploaded(true)
-      addUserMessage('📎 Reference image uploaded')
-      advanceStep('reference', 'uploaded')
-    }
-    reader.readAsDataURL(file)
+    const files = Array.from(e.target.files ?? [])
+    if (!files.length) return
+
+    // Reset input so same file can be re-selected if needed
+    e.target.value = ''
+
+    const remaining = MAX_IMAGES - referenceImages.length
+    const toProcess = files.slice(0, remaining)
+
+    toProcess.forEach(file => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        setReferenceImages(prev => {
+          if (prev.length >= MAX_IMAGES) return prev
+          return [...prev, dataUrl]
+        })
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+
+  // User taps Done — lock uploads and advance step
+  const handleUploadDone = () => {
+    if (uploadDone) return
+    setUploadDone(true)
+    const count = referenceImages.length
+    const label = count === 0
+      ? 'No reference image uploaded'
+      : count === 1
+        ? '📎 1 reference image uploaded'
+        : `📎 ${count} reference images uploaded`
+    addUserMessage(label)
+    advanceStep('reference', count > 0 ? 'uploaded' : 'skipped')
   }
 
   const submitToBackend = async (finalAnswers: Record<string, string>) => {
@@ -213,7 +246,10 @@ export default function ChatWindow({ onComplete }: Props) {
           budget_range: finalAnswers.budget ?? '',
           preferred_timing: finalAnswers.timeline ?? '',
           idea_readiness: 'knows_exactly',
-          reference_image: referenceImage ?? null,
+          // Send array of images — backend accepts reference_images list
+          // and falls back to reference_image (single) for compatibility
+          reference_images: referenceImages,
+          reference_image: referenceImages[0] ?? null,
           guided_discovery: null,
         }),
       })
@@ -378,18 +414,13 @@ export default function ChatWindow({ onComplete }: Props) {
                         }
                       }}
                     >
-                      <span style={{
-                        fontWeight: isDescriptive ? 500 : 400,
-                        fontSize: '13px',
-                      }}>
+                      <span style={{ fontWeight: isDescriptive ? 500 : 400, fontSize: '13px' }}>
                         {label}
                       </span>
                       {description && (
                         <span style={{
-                          fontSize: '11px',
-                          color: 'var(--text-muted)',
-                          fontWeight: 300,
-                          letterSpacing: '0.02em',
+                          fontSize: '11px', color: 'var(--text-muted)',
+                          fontWeight: 300, letterSpacing: '0.02em',
                         }}>
                           {description}
                         </span>
@@ -400,8 +431,8 @@ export default function ChatWindow({ onComplete }: Props) {
               </div>
             )}
 
-            {/* Upload zone */}
-            {msg.isUpload && step === 'reference' && !imageUploaded && (
+            {/* ── Upload zone — multi-image ───────────────────────── */}
+            {msg.isUpload && step === 'reference' && !uploadDone && (
               <div style={{ paddingLeft: '38px', marginTop: '10px' }}>
                 <input
                   ref={fileRef}
@@ -410,38 +441,109 @@ export default function ChatWindow({ onComplete }: Props) {
                   style={{ display: 'none' }}
                   onChange={handleImageUpload}
                 />
-                <div
-                  onClick={() => fileRef.current?.click()}
-                  style={{
-                    border: '1px dashed var(--gold)',
-                    borderRadius: '8px',
-                    padding: '24px 20px',
-                    textAlign: 'center',
-                    cursor: 'pointer',
-                    maxWidth: '300px',
-                    transition: 'all 0.15s ease',
-                    background: 'rgba(201,168,76,0.04)',
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.09)' }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.04)' }}
-                >
-                  <div style={{ fontSize: '20px', marginBottom: '8px' }}>↑</div>
-                  <div style={{ color: 'var(--gold)', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
-                    Tap to upload your reference image
-                  </div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '11px', lineHeight: 1.6 }}>
-                    JPG, PNG, or HEIC · Required
-                  </div>
-                </div>
-              </div>
-            )}
 
-            {/* Uploaded image preview */}
-            {msg.isUpload && referenceImage && (
-              <div style={{ paddingLeft: '38px', marginTop: '10px' }}>
-                <img src={referenceImage} alt="Reference" style={{
-                  maxWidth: '200px', borderRadius: '8px', border: '1px solid var(--border)',
-                }} />
+                {/* Image previews */}
+                {referenceImages.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                    {referenceImages.map((src, idx) => (
+                      <div key={idx} style={{ position: 'relative' }}>
+                        <img
+                          src={src}
+                          alt={`Reference ${idx + 1}`}
+                          style={{
+                            width: '80px', height: '80px',
+                            objectFit: 'cover',
+                            borderRadius: '8px',
+                            border: '1px solid var(--gold)',
+                          }}
+                        />
+                        {/* Remove button */}
+                        <button
+                          onClick={() => setReferenceImages(prev => prev.filter((_, i) => i !== idx))}
+                          style={{
+                            position: 'absolute', top: '-6px', right: '-6px',
+                            width: '18px', height: '18px', borderRadius: '50%',
+                            background: 'var(--surface-2)', border: '1px solid var(--border)',
+                            color: 'var(--text-muted)', fontSize: '10px',
+                            cursor: 'pointer', display: 'flex',
+                            alignItems: 'center', justifyContent: 'center',
+                            lineHeight: 1,
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Upload tap zone — shown until max reached */}
+                {referenceImages.length < MAX_IMAGES && (
+                  <div
+                    onClick={() => fileRef.current?.click()}
+                    style={{
+                      border: '1px dashed var(--gold)',
+                      borderRadius: '8px',
+                      padding: referenceImages.length > 0 ? '14px 20px' : '24px 20px',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      maxWidth: '300px',
+                      transition: 'all 0.15s ease',
+                      background: 'rgba(201,168,76,0.04)',
+                      marginBottom: '10px',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.09)' }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(201,168,76,0.04)' }}
+                  >
+                    {referenceImages.length === 0 ? (
+                      <>
+                        <div style={{ fontSize: '20px', marginBottom: '8px' }}>↑</div>
+                        <div style={{ color: 'var(--gold)', fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
+                          Tap to upload a reference image
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+                          JPG, PNG, or HEIC · Up to {MAX_IMAGES} images
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ color: 'var(--gold)', fontSize: '13px', fontWeight: 500 }}>
+                        + Add another ({referenceImages.length}/{MAX_IMAGES})
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Done / Skip buttons */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {referenceImages.length > 0 && (
+                    <button
+                      onClick={handleUploadDone}
+                      style={{
+                        padding: '8px 20px',
+                        background: 'var(--gold)',
+                        color: 'var(--black)',
+                        borderRadius: '8px',
+                        fontSize: '13px', fontWeight: 600,
+                        border: 'none', cursor: 'pointer',
+                      }}
+                    >
+                      Done
+                    </button>
+                  )}
+                  <button
+                    onClick={handleUploadDone}
+                    style={{
+                      padding: '8px 16px',
+                      background: 'none',
+                      color: 'var(--text-muted)',
+                      borderRadius: '8px',
+                      fontSize: '12px', fontWeight: 400,
+                      border: '1px solid var(--border)', cursor: 'pointer',
+                    }}
+                  >
+                    {referenceImages.length > 0 ? 'Skip remaining' : 'Skip for now'}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -475,7 +577,7 @@ export default function ChatWindow({ onComplete }: Props) {
               step === 'name' ? 'Your name...' :
               step === 'contact' ? 'Your phone number...' :
               step === 'placement' ? 'e.g. left forearm, right chest...' :
-              'Describe your tattoo in as much detail as possible...'
+              'Describe your tattoo idea...'
             }
             style={{
               flex: 1, background: 'var(--surface-2)', border: '1px solid var(--border)',

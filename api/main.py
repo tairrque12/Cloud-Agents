@@ -1,7 +1,7 @@
 # api/main.py
 # Inkbook — FastAPI Backend
 # Configured for: Miguel
-# Last updated: May 2, 2026
+# Last updated: May 3, 2026
 #
 # TELEGRAM ARCHITECTURE:
 # Telegram fires once — on /api/miguel/confirm-date —
@@ -9,15 +9,20 @@
 #
 # PRICING ARCHITECTURE:
 # Prices are anchored to PRICING_TIERS based on session type.
-# Session type is detected from:
-#   1. Pricing agent output (highest priority)
-#   2. Placement field — if placement mentions "sleeve" → full_sleeve
-#   3. Client size_selection (fallback)
 # Never scraped from prose.
 #
 # DATE ARCHITECTURE:
 # "NEEDS_ALTERNATE" sentinel for clients whose preferred dates
 # don't match Miguel's calendar. Triggers personal followup.
+#
+# IMAGE ARCHITECTURE:
+# reference_images accepts a list of up to 3 base64 images.
+# reference_image (single) is kept for backward compatibility.
+# If reference_images is provided it takes precedence.
+# Only the first image is passed to the crew (agents don't need
+# raw image data — they receive a flag). All images are stored
+# in the DB via reference_image_url (first image) for now.
+# Full multi-image DB support is a future migration.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,7 +71,6 @@ NEEDS_ALTERNATE_DATES = "NEEDS_ALTERNATE"
 
 # ─────────────────────────────────────────
 # FIELD MAPPINGS
-# Frontend labels → DB constraint values
 # ─────────────────────────────────────────
 
 BUDGET_MAP = {
@@ -134,6 +138,9 @@ class IntakeRequest(BaseModel):
     cover_up_description: Optional[str] = None
     budget_range: str
     preferred_timing: str
+    # Multi-image support — takes precedence over reference_image
+    reference_images: Optional[List[str]] = []
+    # Single image — kept for backward compatibility
     reference_image: Optional[str] = None
     idea_readiness: str
     guided_discovery: Optional[GuidedDiscovery] = None
@@ -148,7 +155,7 @@ class ApprovalRequest(BaseModel):
 
 class DateConfirmRequest(BaseModel):
     intake_id: str
-    selected_date: str   # date string OR "NEEDS_ALTERNATE" sentinel
+    selected_date: str
 
 # ─────────────────────────────────────────
 # IN-MEMORY STORE
@@ -196,28 +203,29 @@ def parse_available_dates(text: str) -> list:
     return dates[:5]
 
 
+def resolve_reference_images(request: 'IntakeRequest') -> list:
+    """
+    Returns the canonical list of reference images.
+    reference_images (array) takes precedence over reference_image (single).
+    Filters out None/empty values.
+    """
+    if request.reference_images:
+        return [img for img in request.reference_images if img]
+    if request.reference_image:
+        return [request.reference_image]
+    return []
+
+
 def extract_pricing(
     pricing_agent_output: str,
     size_selection: str,
     placement: str = ""
 ) -> dict:
-    """
-    Extract structured pricing data anchored to PRICING_TIERS.
-
-    Detection priority:
-      1. Pricing agent declared session type (highest authority)
-      2. Placement contains "sleeve" → full_sleeve
-         (handles UI cases like size=Large + placement=Full Arm Sleeve)
-      3. Client size_selection mapped to a tier
-
-    Never scrapes raw numbers from prose.
-    """
     text = pricing_agent_output.lower()
     placement_lower = (placement or "").lower()
 
     session_type = None
 
-    # ── Priority 1: agent's declared session type ───────────────
     if "full sleeve" in text:
         session_type = "full_sleeve"
     elif "full day" in text:
@@ -227,24 +235,13 @@ def extract_pricing(
     elif "small" in text:
         session_type = "small"
 
-    # ── Priority 2: placement-aware sleeve override ─────────────
-    # If the user picked a sleeve placement (Full Arm Sleeve,
-    # Full Leg Sleeve, etc.) but the agent didn't catch it,
-    # upgrade to full_sleeve. Sleeve placement always means
-    # multi-session work regardless of size selection.
     if not session_type and "sleeve" in placement_lower:
         session_type = "full_sleeve"
-        print(f">>> Sleeve placement detected ('{placement}') — "
-              f"upgraded to full_sleeve")
-
-    # Edge case: agent said "small" but placement is sleeve.
-    # Trust the placement — sleeve overrides small classification.
+        print(f">>> Sleeve placement detected ('{placement}') — upgraded to full_sleeve")
     elif session_type == "small" and "sleeve" in placement_lower:
         session_type = "full_sleeve"
-        print(f">>> Sleeve placement override — "
-              f"agent said small but placement is '{placement}'")
+        print(f">>> Sleeve placement override — agent said small but placement is '{placement}'")
 
-    # ── Priority 3: size_selection fallback ─────────────────────
     if not session_type:
         size_to_tier = {
             "small": "small",
@@ -255,8 +252,7 @@ def extract_pricing(
         session_type = size_to_tier.get(size_selection, "small")
 
     tier = PRICING_TIERS[session_type]
-
-    print(f">>> Pricing extraction: session_type={session_type}, "
+    print(f">>> Pricing: session_type={session_type}, "
           f"min={tier['min']}, max={tier['max']}, deposit={tier['deposit']}")
 
     return {
@@ -301,7 +297,8 @@ async def store_intake(
     raw_crew_output: str,
     budget_db: str,
     timing_db: str,
-    size_db: str
+    size_db: str,
+    primary_image_url: Optional[str] = None
 ) -> Intake:
     guided = request.guided_discovery
     intake = Intake(
@@ -318,7 +315,8 @@ async def store_intake(
         budget_range=budget_db,
         preferred_timing=timing_db,
         idea_readiness=request.idea_readiness,
-        reference_image_url=request.reference_image,
+        # Store first image URL — full multi-image DB support is a future migration
+        reference_image_url=primary_image_url,
         guided_meaning=guided.meaning if guided else None,
         guided_imagery=guided.imagery if guided else None,
         guided_style_notes=guided.style_notes if guided else None,
@@ -372,11 +370,6 @@ async def intake(
     request: IntakeRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Runs the crew and returns the estimate to the frontend.
-    Does NOT send Telegram. Telegram fires only after client
-    selects a date (or signals none work) via /api/miguel/confirm-date.
-    """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
         timing_db = TIMING_MAP.get(request.preferred_timing, "flexible")
@@ -386,6 +379,12 @@ async def intake(
         print(f">>> Mapped timing: {request.preferred_timing} → {timing_db}")
         print(f">>> Mapped size: {request.size_selection} → {size_db}")
         print(f">>> Placement: {request.placement}")
+
+        # Resolve images — array takes precedence over single
+        all_images = resolve_reference_images(request)
+        image_count = len(all_images)
+        primary_image = all_images[0] if all_images else None
+        print(f">>> Reference images: {image_count} uploaded")
 
         form_data = {
             "client_name": request.client_name,
@@ -398,7 +397,9 @@ async def intake(
             "cover_up_description": request.cover_up_description,
             "budget_range": budget_db,
             "preferred_timing": timing_db,
-            "reference_image": request.reference_image,
+            # Pass image count flag to crew — agents don't need raw data
+            "reference_image": "reference_image_uploaded" if image_count > 0 else None,
+            "reference_image_count": image_count,
             "idea_readiness": request.idea_readiness,
             "guided_discovery": request.guided_discovery.dict()
                 if request.guided_discovery else None
@@ -412,10 +413,6 @@ async def intake(
         print(f">>> Classification: {classification}")
 
         client_message, session_summary = parse_crew_output(result)
-
-        # ── Pricing — placement-aware extraction ─────────────────
-        # Pass placement so extract_pricing can detect sleeve cases
-        # that the agent might miss (e.g. size=Large, placement=Full Arm Sleeve)
         pricing = extract_pricing(result, size_db, request.placement)
         print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
               f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
@@ -423,10 +420,9 @@ async def intake(
         available_dates = parse_available_dates(client_message)
         if not available_dates:
             available_dates = parse_available_dates(result)
-        print(f">>> Available dates extracted: {available_dates}")
+        print(f">>> Available dates: {available_dates}")
 
         # ── Database ──────────────────────────
-        print(">>> Writing to database...")
         artist = await get_miguel(db)
         client = await get_or_create_client(
             db=db,
@@ -444,14 +440,14 @@ async def intake(
             raw_crew_output=result,
             budget_db=budget_db,
             timing_db=timing_db,
-            size_db=size_db
+            size_db=size_db,
+            primary_image_url=primary_image
         )
         print(f">>> Stored intake: {short_id}")
 
         client.total_intakes = (client.total_intakes or 0) + 1
         await db.commit()
 
-        # ── Memory store ──────────────────────
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -462,6 +458,7 @@ async def intake(
             "selected_date": None,
             "pricing": pricing,
             "preferred_timing": timing_db,
+            "image_count": image_count,
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
@@ -484,10 +481,7 @@ async def intake(
 
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Intake failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Intake failed: {str(e)}")
 
 
 @app.post("/api/miguel/confirm-date")
@@ -495,10 +489,6 @@ async def confirm_date(
     request: DateConfirmRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Called when the client selects a date OR signals none of the
-    offered dates work. The ONLY place Telegram fires.
-    """
     try:
         short_id = request.intake_id
         selected_date = request.selected_date
@@ -558,7 +548,6 @@ async def approve(
             return {"status": "success", "decision": "declined", "intake_id": request.intake_id}
         else:
             raise HTTPException(status_code=400, detail="Invalid decision.")
-
     except HTTPException:
         raise
     except Exception as e:
@@ -571,11 +560,6 @@ async def telegram_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Handles Miguel's replies from Telegram.
-    Format: APPROVE C7D3828A / DECLINE C7D3828A / ADJUST C7D3828A
-    Concurrent-safe — parses ID directly from message text.
-    """
     try:
         body = await request.json()
         message = body.get("message", {})
