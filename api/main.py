@@ -9,8 +9,6 @@
 # directly in the API response as available_dates.
 # The frontend uses this list directly for the date picker — no parsing,
 # no agent interpretation, no drift.
-# The crew still receives the dates as context for prose generation
-# but the date picker is always anchored to the raw calendar output.
 #
 # TELEGRAM ARCHITECTURE:
 # Telegram fires once — on /api/miguel/confirm-date.
@@ -19,7 +17,9 @@
 # Prices anchored to PRICING_TIERS by session type. Never scraped from prose.
 #
 # IMAGE ARCHITECTURE:
-# reference_images accepts up to 3 base64 images.
+# reference_images accepts up to 3 base64 images. Stored in intake_store
+# at intake time, then sent to Miguel's Telegram when the client
+# confirms their date. Miguel sees the photos before reading the card.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -240,8 +240,6 @@ def format_dates_for_frontend(raw_dates: list[str]) -> list[str]:
         if '·' in d:
             formatted.append(d.strip())
         else:
-            # Insert · between day name and month
-            # "Saturday May 10" → "Saturday · May 10"
             parts = d.strip().split(' ', 1)
             if len(parts) == 2:
                 formatted.append(f"{parts[0]} · {parts[1]}")
@@ -361,9 +359,10 @@ async def intake(
 
     CALENDAR FIX: get_available_dates() is called HERE in main.py
     before the crew fires. The raw dates are returned directly to
-    the frontend as available_dates. The crew also receives them
-    as context strings for prose generation, but the date picker
-    always uses the structured list — never agent-parsed prose.
+    the frontend as available_dates.
+
+    IMAGE STORAGE: reference_images are stored in intake_store
+    so they can be sent to Miguel's Telegram when the date is confirmed.
     """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
@@ -376,29 +375,22 @@ async def intake(
         print(f">>> Placement: {request.placement}")
 
         # ── STEP 1: Fetch real calendar dates BEFORE crew fires ──
-        # This is the source of truth for the date picker.
-        # Raw format: ["Saturday May 10", "Thursday May 22", ...]
-        # These strings come directly from Miguel's Google Calendar.
-        # No agent touches them before they reach the frontend.
         print(">>> Fetching calendar dates...")
         raw_calendar_dates = get_available_dates(size_db)
         print(f">>> Raw calendar dates: {raw_calendar_dates}")
 
-        # Format for frontend: "Saturday May 10" → "Saturday · May 10"
         available_dates = format_dates_for_frontend(raw_calendar_dates)
         print(f">>> Formatted dates for frontend: {available_dates}")
 
         # ── STEP 2: Resolve images ───────────────────────────────
+        # all_images is the list we'll forward to Telegram later.
+        # Held in intake_store until /confirm-date fires.
         all_images = resolve_reference_images(request)
         image_count = len(all_images)
         primary_image = all_images[0] if all_images else None
         print(f">>> Reference images: {image_count} uploaded")
 
         # ── STEP 3: Build form data for crew ─────────────────────
-        # Pass the raw calendar dates as a comma-separated string
-        # so the scheduling agent can use them for prose generation.
-        # The agent's prose may rephrase them — that's fine because
-        # the date picker uses available_dates, not the prose.
         form_data = {
             "client_name": request.client_name,
             "contact": request.contact,
@@ -415,7 +407,6 @@ async def intake(
             "idea_readiness": request.idea_readiness,
             "guided_discovery": request.guided_discovery.dict()
                 if request.guided_discovery else None,
-            # Pass calendar dates to crew for prose context
             "calendar_dates": raw_calendar_dates,
         }
 
@@ -460,6 +451,9 @@ async def intake(
         await db.commit()
 
         # ── STEP 6: Memory store ─────────────────────────────────
+        # IMPORTANT: reference_images stored here so confirm-date
+        # endpoint can forward them to Telegram. Without this,
+        # Miguel would never see the photos the client uploaded.
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -471,6 +465,7 @@ async def intake(
             "pricing": pricing,
             "preferred_timing": timing_db,
             "image_count": image_count,
+            "reference_images": all_images,   # ← needed for Telegram photos
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
@@ -479,14 +474,13 @@ async def intake(
 
         print(">>> Intake stored. Waiting for client to select date.")
 
-        # ── STEP 7: Return — available_dates is the structured ───
-        # calendar output, NOT parsed from agent prose.
+        # ── STEP 7: Return ───────────────────────────────────────
         return {
             "status": "success",
             "message": "Estimate ready",
             "intake_id": short_id,
             "client_message": client_message,
-            "available_dates": available_dates,   # ← direct from calendar
+            "available_dates": available_dates,
             "preferred_timing": timing_db,
             "price_min": pricing["price_min"],
             "price_max": pricing["price_max"],
@@ -504,6 +498,10 @@ async def confirm_date(
     request: DateConfirmRequest,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Triggers the Telegram notification to Miguel.
+    Sends reference images first (as photos), then the text card.
+    """
     try:
         short_id = request.intake_id
         selected_date = request.selected_date
@@ -528,7 +526,9 @@ async def confirm_date(
                 client_message=intake["client_message"],
                 session_summary=intake["session_summary"],
                 intake_id=short_id,
-                selected_date=selected_date
+                selected_date=selected_date,
+                # Forward stored images so Miguel sees them in Telegram
+                reference_images=intake.get("reference_images", []),
             )
             print(">>> Telegram sent")
         except Exception as telegram_error:

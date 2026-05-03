@@ -57,14 +57,18 @@ export default function LandingPage({ onStart }: Props) {
         Inkbook
       </h1>
 
+      {/* Credentials line — establishes trust upfront with skin tone messaging */}
       <p style={{
         color: 'var(--gold)',
         fontSize: '11px',
-        letterSpacing: '0.22em',
+        letterSpacing: '0.18em',
         textTransform: 'uppercase',
         marginBottom: '44px',
+        textAlign: 'center',
+        lineHeight: 1.6,
+        maxWidth: '340px',
       }}>
-        Booking with Miguel · Austin, TX
+        Black and Grey Realism · All Skin Tones Welcome · Austin, TX
       </p>
 
       {/* Hero */}
