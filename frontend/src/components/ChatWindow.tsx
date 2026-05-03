@@ -1,6 +1,6 @@
 // src/components/ChatWindow.tsx
 // Inkbook — Chat intake flow
-// Updated: parses availableDates array and passes intakeId through onComplete
+// Updated: pricing read directly from backend response (no regex scraping)
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
@@ -47,7 +47,7 @@ const CHIPS: Partial<Record<Step, string[]>> = {
   timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
 }
 
-// ─── DATE PARSING ────────────────────────────────────────────────
+// ─── DATE PARSING (still used as fallback if backend dates absent) ─
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December']
@@ -68,6 +68,16 @@ function parseAvailableDates(text: string): string[] {
     }
   }
   return dates
+}
+
+// ─── PRICING FALLBACK MAP ─────────────────────────────────────────
+// Mirrors PRICING_TIERS in api/main.py.
+// Only used if the backend response is missing pricing fields.
+const FALLBACK_PRICING: Record<string, { min: number; max: number }> = {
+  small:       { min: 100, max: 300 },
+  medium:      { min: 400, max: 600 },
+  large:       { min: 800, max: 1000 },
+  full_sleeve: { min: 800, max: 1000 },
 }
 
 export default function ChatWindow({ onComplete }: Props) {
@@ -153,6 +163,10 @@ export default function ChatWindow({ onComplete }: Props) {
     setTimeout(() => addAssistantMessage('📅 Checking artist availability… ✓'), 1200)
     setTimeout(() => addAssistantMessage('💰 Preparing your estimate… ✓'), 2000)
 
+    // Pre-compute size key for fallback pricing in case backend omits it
+    const rawSize = finalAnswers.size?.toLowerCase() ?? 'small'
+    const sizeKey = rawSize.replace(' ', '_')
+
     try {
       const res = await fetch('https://inkbook-4tlr.onrender.com/api/miguel/intake', {
         method: 'POST',
@@ -161,7 +175,7 @@ export default function ChatWindow({ onComplete }: Props) {
           client_name: finalAnswers.name ?? '',
           contact: finalAnswers.contact ?? '',
           description: finalAnswers.description ?? '',
-          size_selection: finalAnswers.size?.toLowerCase() ?? '',
+          size_selection: rawSize,
           placement: finalAnswers.placement ?? 'not specified',
           styles: finalAnswers.style ? [finalAnswers.style.toLowerCase().replace(' ', '_')] : [],
           is_cover_up: finalAnswers.coverup === 'Yes',
@@ -177,20 +191,23 @@ export default function ChatWindow({ onComplete }: Props) {
       const data = await res.json()
       const message = data.client_message ?? ''
 
-      // ── Price extraction ──────────────────────────────────────
-      const allPrices = [...message.matchAll(/\$(\d{1,4})/g)].map((m: RegExpMatchArray) => parseInt(m[1]))
-      const validPrices = allPrices.filter((p: number) => p >= 50)
-      const priceMin = validPrices.length >= 2 ? Math.min(...validPrices) : 800
-      const priceMax = validPrices.length >= 2 ? Math.max(...validPrices) : 1000
+      // ── Pricing — read from structured backend response ─────
+      // Backend now returns price_min, price_max, deposit, session_type
+      // anchored on Miguel's actual rate tiers. No regex scraping.
+      // Fallback to local PRICING table only if backend omits the fields.
+      const fallback = FALLBACK_PRICING[sizeKey] ?? FALLBACK_PRICING.small
+      const priceMin: number = typeof data.price_min === 'number'
+        ? data.price_min
+        : fallback.min
+      const priceMax: number = typeof data.price_max === 'number'
+        ? data.price_max
+        : fallback.max
 
-      // ── Intake ID ─────────────────────────────────────────────
-      // Passed to EstimateCard so it can call /api/miguel/confirm-date
+      // ── Intake ID ────────────────────────────────────────────
       const intakeId: string = data.intake_id ?? ''
 
-      // ── Date extraction ───────────────────────────────────────
-      // Prefer backend available_dates array, fall back to prose parsing
+      // ── Date extraction ──────────────────────────────────────
       let availableDates: string[] = []
-
       if (Array.isArray(data.available_dates) && data.available_dates.length > 0) {
         availableDates = data.available_dates.map((d: string) =>
           d.includes('·') ? d : d.replace(/,?\s+/, ' · ')
@@ -198,7 +215,6 @@ export default function ChatWindow({ onComplete }: Props) {
       } else {
         availableDates = parseAvailableDates(message)
       }
-
       if (availableDates.length === 0) {
         availableDates = ['Saturday · May 10', 'Thursday · May 15', 'Saturday · May 24']
       }
@@ -217,10 +233,12 @@ export default function ChatWindow({ onComplete }: Props) {
       }, 2800)
 
     } catch {
+      // Network failure fallback — use local pricing tier for the size
+      const fallback = FALLBACK_PRICING[sizeKey] ?? FALLBACK_PRICING.small
       setTimeout(() => {
         onComplete({
-          priceMin: 800,
-          priceMax: 1000,
+          priceMin: fallback.min,
+          priceMax: fallback.max,
           estimatedDate: 'Saturday · May 17',
           availableDates: ['Saturday · May 17', 'Thursday · May 22', 'Saturday · May 31'],
           intakeId: '',

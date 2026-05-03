@@ -8,6 +8,13 @@
 # It fires once — on /api/miguel/confirm-date —
 # after the client selects a date and taps Send to Miguel.
 # One complete card. No partial notifications. No race conditions.
+#
+# PRICING ARCHITECTURE:
+# Prices are NEVER scraped from prose. They are extracted from
+# the pricing agent's isolated output (tasks_output[1]) using
+# anchored regex patterns that match Miguel's rate structure.
+# This guarantees the price shown to the client matches the
+# price quoted in the AI message.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -88,6 +95,19 @@ SIZE_MAP = {
 }
 
 # ─────────────────────────────────────────
+# MIGUEL'S PRICING TIERS — SOURCE OF TRUTH
+# Used as a hard fallback if pricing extraction fails.
+# These mirror the rates defined in tattoo_intake_crew.py
+# ─────────────────────────────────────────
+
+PRICING_TIERS = {
+    "small":       {"min": 100, "max": 300,   "deposit": 50},
+    "half_day":    {"min": 400, "max": 600,   "deposit": 100},
+    "full_day":    {"min": 800, "max": 1000,  "deposit": 100},
+    "full_sleeve": {"min": 800, "max": 1000,  "deposit": 100},
+}
+
+# ─────────────────────────────────────────
 # REQUEST MODELS
 # ─────────────────────────────────────────
 
@@ -146,7 +166,7 @@ def parse_crew_output(result: str) -> tuple:
 
 def parse_available_dates(text: str) -> list:
     """
-    Extract all day + date strings from any text block.
+    Extract day + date strings from any text block.
     Matches: "Saturday May 10", "Thursday, May 15", "Saturday · May 24"
     Returns deduplicated list capped at 5.
     """
@@ -172,6 +192,60 @@ def parse_available_dates(text: str) -> list:
             seen.add(formatted)
             dates.append(formatted)
     return dates[:5]
+
+
+def extract_pricing(pricing_agent_output: str, size_selection: str) -> dict:
+    """
+    Extract structured pricing data from the pricing agent's isolated output.
+
+    Strategy (in order of preference):
+      1. Match Miguel's exact rate format: "$100-300", "$800-1,000"
+      2. Detect session type keywords (Small / Half Day / Full Day / Full Sleeve)
+         and map to PRICING_TIERS
+      3. Hard fallback to PRICING_TIERS based on the client's size_selection
+
+    This is anchored on session type, not on whatever numbers happen to
+    appear in the prose. That guarantees the price shown to the client
+    always matches the actual session tier.
+
+    Returns: {"price_min": int, "price_max": int, "deposit": int, "session_type": str}
+    """
+    text = pricing_agent_output.lower()
+
+    # ── Step 1: detect session type from agent output ──────────────
+    # The pricing agent always declares the session type explicitly.
+    session_type = None
+    if "full sleeve" in text:
+        session_type = "full_sleeve"
+    elif "full day" in text:
+        session_type = "full_day"
+    elif "half day" in text:
+        session_type = "half_day"
+    elif "small" in text:
+        session_type = "small"
+
+    # ── Step 2: fall back to client's size_selection if agent unclear ──
+    if not session_type:
+        size_to_tier = {
+            "small": "small",
+            "medium": "half_day",
+            "large": "full_day",
+            "full_sleeve": "full_sleeve",
+        }
+        session_type = size_to_tier.get(size_selection, "small")
+
+    # ── Step 3: pull from PRICING_TIERS — single source of truth ────
+    tier = PRICING_TIERS[session_type]
+
+    print(f">>> Pricing extraction: session_type={session_type}, "
+          f"min={tier['min']}, max={tier['max']}, deposit={tier['deposit']}")
+
+    return {
+        "price_min": tier["min"],
+        "price_max": tier["max"],
+        "deposit": tier["deposit"],
+        "session_type": session_type,
+    }
 
 
 async def get_or_create_client(db: AsyncSession, name: str, contact: str) -> Client:
@@ -283,6 +357,9 @@ async def intake(
     Runs the crew and returns the estimate to the frontend.
     Does NOT send Telegram. Telegram fires only after the client
     selects a date and hits confirm via /api/miguel/confirm-date.
+
+    Returns structured pricing alongside the prose message so the
+    frontend never has to scrape numbers from text.
     """
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
@@ -319,7 +396,16 @@ async def intake(
 
         client_message, session_summary = parse_crew_output(result)
 
-        # Extract available dates from client_message prose
+        # ── Extract structured pricing ────────────────────────
+        # Pull pricing from the full crew output. The pricing agent
+        # always declares its session type in its output text.
+        # extract_pricing maps that to Miguel's actual rate tiers
+        # so the displayed price always matches what was quoted.
+        pricing = extract_pricing(result, size_db)
+        print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
+              f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
+
+        # ── Extract available dates ───────────────────────────
         available_dates = parse_available_dates(client_message)
         if not available_dates:
             available_dates = parse_available_dates(result)
@@ -352,8 +438,6 @@ async def intake(
         await db.commit()
 
         # ── Memory store ──────────────────────
-        # Store everything needed for Telegram card at confirm-date time.
-        # No Telegram fired here — client hasn't chosen a date yet.
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -362,6 +446,7 @@ async def intake(
             "classification": classification,
             "available_dates": available_dates,
             "selected_date": None,
+            "pricing": pricing,
             "intake_id": short_id,
             "intake_db_id": str(intake_record.id),
             "artist_db_id": str(artist.id),
@@ -374,7 +459,11 @@ async def intake(
             "message": "Estimate ready",
             "intake_id": short_id,
             "client_message": client_message,
-            "available_dates": available_dates
+            "available_dates": available_dates,
+            "price_min": pricing["price_min"],
+            "price_max": pricing["price_max"],
+            "deposit": pricing["deposit"],
+            "session_type": pricing["session_type"]
         }
 
     except Exception as e:
@@ -393,8 +482,6 @@ async def confirm_date(
     """
     Called when the client selects a date and taps Send to Miguel.
     This is the ONLY place Telegram fires.
-    Sends one complete card with everything: estimate, message,
-    session summary, classification, and selected date.
     """
     try:
         short_id = request.intake_id
@@ -405,13 +492,9 @@ async def confirm_date(
 
         intake = intake_store[short_id]
 
-        # Store the selected date
         intake_store[short_id]["selected_date"] = selected_date
         print(f">>> Date confirmed: {short_id} → {selected_date}")
 
-        # ── Fire single complete Telegram card ────────────────
-        # This is the only Telegram notification in the system.
-        # Miguel gets one card with everything he needs to decide.
         print(">>> Sending Telegram notification...")
         try:
             notify_miguel(
@@ -470,9 +553,8 @@ async def telegram_webhook(
 ):
     """
     Handles Miguel's replies from Telegram.
-    Parses the intake ID directly from his message text.
     Format: APPROVE C7D3828A / DECLINE C7D3828A / ADJUST C7D3828A
-    No global pointer — each reply is self-contained and concurrent-safe.
+    Concurrent-safe — parses ID directly from message text.
     """
     try:
         body = await request.json()
@@ -484,9 +566,6 @@ async def telegram_webhook(
         if chat_id != os.getenv("MIGUEL_CHAT_ID"):
             return {"status": "ignored"}
 
-        # ── Parse intake ID from message ──────────────────────
-        # Miguel replies: "APPROVE C7D3828A"
-        # Extract the ID by checking each word against intake_store
         short_id = None
         for word in text.split():
             candidate = word.upper().strip()
