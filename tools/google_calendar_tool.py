@@ -20,7 +20,7 @@ from googleapiclient.discovery import build
 # Updated from migueltattooappts@gmail.com — the Gmail address returns 404.
 # This is the real internal calendar ID from Miguel's Google Calendar settings URL.
 # Source: /settings/calendar/bWIndWVsdGF0dG9vYXBwdHNAZ21haWwuY29t
-CALENDAR_ID = "bWIndWVsdGF0dG9vYXBwdHNAZ21haWwuY29t"
+CALENDAR_ID = "migueltattooappts@gmail.com"
 CREDENTIALS_FILE = os.path.join(
     os.path.dirname(__file__), "../config/google_credentials.json"
 )
