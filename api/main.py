@@ -18,9 +18,13 @@
 # sent to Miguel's Telegram as photos when client confirms date.
 #
 # COVERAGE ARCHITECTURE:
-# coverage field added (optional, from new frontend coverage chips).
+# coverage field replaces ambiguous size (small/medium/large).
 # Passed to crew as context. Shown on Miguel's Telegram card.
-# Replaces ambiguous size (small/medium/large) with placement + coverage.
+#
+# ADMIN ARCHITECTURE:
+# /api/miguel/intakes returns all in-memory intakes for the admin dashboard.
+# Secret URL + password gate on frontend — no auth needed on this endpoint
+# since the URL itself is not public.
 
 from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,9 +136,6 @@ class IntakeRequest(BaseModel):
     size_selection: str
     description: str
     placement: str
-    # NEW: coverage replaces ambiguous size chips on frontend.
-    # Values: "Just a section", "Most of it", "The whole thing", "full" (auto for sleeves)
-    # Optional for backward compatibility with any existing integrations.
     coverage: Optional[str] = None
     styles: Optional[List[str]] = []
     is_cover_up: bool = False
@@ -381,6 +382,35 @@ def health_check():
     }
 
 
+@app.get("/api/miguel/intakes")
+def get_intakes():
+    """
+    Returns all intakes from memory store for the admin dashboard.
+    Called by AdminDashboard.tsx at /admin-inkbook-m1g.
+    Password gate is on the frontend — this endpoint is not publicly linked.
+    """
+    result = []
+    for short_id, intake in intake_store.items():
+        result.append({
+            "intake_id": short_id,
+            "client_name": intake.get("client_name", ""),
+            "client_contact": intake.get("client_contact", ""),
+            "placement": intake.get("placement", ""),
+            "coverage": intake.get("coverage", ""),
+            "selected_date": intake.get("selected_date"),
+            "status": intake.get("status", "pending"),
+            "price_min": intake.get("pricing", {}).get("price_min", 0),
+            "price_max": intake.get("pricing", {}).get("price_max", 0),
+            "session_type": intake.get("pricing", {}).get("session_type", ""),
+            "classification": intake.get("classification", ""),
+            "client_message": intake.get("client_message", ""),
+            "session_summary": intake.get("session_summary", ""),
+            "image_count": intake.get("image_count", 0),
+        })
+    # Most recent first
+    return {"intakes": list(reversed(result))}
+
+
 @app.post("/api/miguel/intake")
 async def intake(
     request: IntakeRequest,
@@ -411,9 +441,6 @@ async def intake(
         print(f">>> Reference images: {image_count} uploaded")
 
         # ── STEP 3: Build form data for crew ─────────────────────
-        # Coverage is passed to the crew so it can reference it
-        # in the client message and session summary prose.
-        # Miguel will see: "Placement: Forearm — Most of it" in the card.
         form_data = {
             "client_name": request.client_name,
             "contact": request.contact,
@@ -475,8 +502,6 @@ async def intake(
         await db.commit()
 
         # ── STEP 6: Memory store ─────────────────────────────────
-        # Coverage stored so it can be included in Telegram card
-        # session summary context alongside placement.
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -523,12 +548,6 @@ async def confirm_date(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Triggers Telegram notification in background so client gets
-    confirmation screen immediately without waiting for photo uploads.
-    Coverage and placement are included in the session_summary
-    the crew already generated, so Miguel sees them on the card.
-    """
     try:
         short_id = request.intake_id
         selected_date = request.selected_date
@@ -544,9 +563,6 @@ async def confirm_date(
         else:
             print(f">>> Date confirmed: {short_id} → {selected_date}")
 
-        # Build an enriched session summary that explicitly shows
-        # placement + coverage at the top so Miguel sees it immediately
-        # without having to read the full prose.
         placement = intake.get("placement", "not specified")
         coverage = intake.get("coverage", "not specified")
         coverage_line = f"Placement: {placement} — {coverage}\n\n"

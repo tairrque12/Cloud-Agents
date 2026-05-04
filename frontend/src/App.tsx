@@ -2,21 +2,27 @@ import { useState } from 'react'
 import LandingPage from './components/LandingPage'
 import ChatWindow from './components/ChatWindow'
 import EstimateCard from './components/EstimateCard'
+import AdminDashboard from './components/AdminDashboard'
 
-export type Screen = 'landing' | 'chat' | 'estimate'
+export type Screen = 'landing' | 'chat' | 'estimate' | 'admin'
 
 export interface Estimate {
   priceMin: number
   priceMax: number
   estimatedDate: string
-  availableDates: string[]   // real dates from Miguel's Google Calendar
-  intakeId: string           // needed to call /api/miguel/confirm-date
-  preferredTiming: string    // user's timeline pick — drives timeframe note
+  availableDates: string[]
+  intakeId: string
+  preferredTiming: string
   summary: string
 }
 
+const ADMIN_PATH = '/admin-inkbook-m1g'
+
 function App() {
-  const [screen, setScreen] = useState<Screen>('landing')
+  const [screen, setScreen] = useState<Screen>(() => {
+    if (window.location.pathname === ADMIN_PATH) return 'admin'
+    return 'landing'
+  })
   const [estimate, setEstimate] = useState<Estimate | null>(null)
 
   return (
@@ -37,6 +43,9 @@ function App() {
           estimate={estimate}
           onReset={() => setScreen('landing')}
         />
+      )}
+      {screen === 'admin' && (
+        <AdminDashboard />
       )}
     </>
   )
