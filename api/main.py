@@ -708,15 +708,81 @@ async def approve(
     request: ApprovalRequest,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Called by the admin dashboard when Miguel taps Approve or Decline.
+    Writes the decision to the approvals table and updates intake status
+    in the DB and in-memory store so the dashboard reflects it immediately.
+    """
     try:
-        if request.decision == "approved":
-            return {"status": "success", "decision": "approved", "intake_id": request.intake_id}
-        elif request.decision == "adjusted":
-            return {"status": "success", "decision": "adjusted", "intake_id": request.intake_id}
-        elif request.decision == "declined":
-            return {"status": "success", "decision": "declined", "intake_id": request.intake_id}
-        else:
+        short_id = request.intake_id
+ 
+        if request.decision not in ("approved", "declined", "adjusted"):
             raise HTTPException(status_code=400, detail="Invalid decision.")
+ 
+        # ── Look up intake in DB ─────────────────────────────────
+        result = await db.execute(
+            select(Intake).where(Intake.short_id == short_id)
+        )
+        intake_record = result.scalar_one_or_none()
+ 
+        if not intake_record:
+            raise HTTPException(status_code=404, detail="Intake not found.")
+ 
+        # ── Get artist ID ────────────────────────────────────────
+        artist = await get_miguel(db)
+ 
+        # ── Get client message for approval record ───────────────
+        client_message = ""
+        if short_id in intake_store:
+            client_message = intake_store[short_id].get("client_message", "")
+        elif intake_record.raw_crew_output:
+            if "---SESSION SUMMARY---" in intake_record.raw_crew_output:
+                parts = intake_record.raw_crew_output.split("---SESSION SUMMARY---")
+                client_message = parts[0].replace("---CLIENT MESSAGE---", "").strip()
+            else:
+                client_message = intake_record.raw_crew_output.strip()
+ 
+        # ── Check if approval already exists — update if so ──────
+        existing = await db.execute(
+            select(Approval).where(Approval.intake_id == intake_record.id)
+        )
+        existing_approval = existing.scalar_one_or_none()
+ 
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+ 
+        if existing_approval:
+            existing_approval.decision = request.decision
+            existing_approval.client_message_sent = client_message
+            existing_approval.message_sent_at = now
+            if request.adjusted_message:
+                existing_approval.adjusted_message = request.adjusted_message
+        else:
+            await store_approval(
+                db=db,
+                intake_id=intake_record.id,
+                artist_id=artist.id,
+                decision=request.decision,
+                client_message_sent=client_message,
+                adjusted_message=request.adjusted_message,
+            )
+ 
+        # ── Update intake status in DB ───────────────────────────
+        intake_record.status = request.decision
+        await db.commit()
+ 
+        # ── Update in-memory store so dashboard reflects it ──────
+        if short_id in intake_store:
+            intake_store[short_id]["status"] = request.decision
+ 
+        print(f">>> Dashboard decision: {request.decision} → {short_id}")
+ 
+        return {
+            "status": "success",
+            "decision": request.decision,
+            "intake_id": short_id
+        }
+ 
     except HTTPException:
         raise
     except Exception as e:
