@@ -19,19 +19,19 @@
 #
 # COVERAGE ARCHITECTURE:
 # coverage field replaces ambiguous size (small/medium/large).
-# Passed to crew as context. Shown on Miguel's Telegram card.
 #
-# ADMIN ARCHITECTURE:
-# /api/miguel/intakes returns all in-memory intakes for the admin dashboard.
-# Secret URL + password gate on frontend — no auth needed on this endpoint
-# since the URL itself is not public.
+# ADMIN DASHBOARD ARCHITECTURE:
+# /api/miguel/intakes reads from PostgreSQL — persistent across restarts.
+# Joins intakes → clients → approvals to return full intake details.
+# In-memory intake_store used as fallback for intakes not yet in DB.
 
 from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
+from sqlalchemy.orm import selectinload
 import sys
 import os
 import re
@@ -383,32 +383,138 @@ def health_check():
 
 
 @app.get("/api/miguel/intakes")
-def get_intakes():
+async def get_intakes(db: AsyncSession = Depends(get_db)):
     """
-    Returns all intakes from memory store for the admin dashboard.
-    Called by AdminDashboard.tsx at /admin-inkbook-m1g.
-    Password gate is on the frontend — this endpoint is not publicly linked.
+    Returns all intakes from PostgreSQL for the admin dashboard.
+    Persistent across Render restarts — reads from DB not memory.
+    Joins intakes → clients for contact info.
+    Joins intakes → approvals for decision status.
+    Joins intakes → estimates for pricing.
+    Most recent intakes first.
     """
-    result = []
-    for short_id, intake in intake_store.items():
-        result.append({
-            "intake_id": short_id,
-            "client_name": intake.get("client_name", ""),
-            "client_contact": intake.get("client_contact", ""),
-            "placement": intake.get("placement", ""),
-            "coverage": intake.get("coverage", ""),
-            "selected_date": intake.get("selected_date"),
-            "status": intake.get("status", "pending"),
-            "price_min": intake.get("pricing", {}).get("price_min", 0),
-            "price_max": intake.get("pricing", {}).get("price_max", 0),
-            "session_type": intake.get("pricing", {}).get("session_type", ""),
-            "classification": intake.get("classification", ""),
-            "client_message": intake.get("client_message", ""),
-            "session_summary": intake.get("session_summary", ""),
-            "image_count": intake.get("image_count", 0),
-        })
-    # Most recent first
-    return {"intakes": list(reversed(result))}
+    try:
+        # Load intakes with related client and approval eagerly
+        result = await db.execute(
+            select(Intake)
+            .options(
+                selectinload(Intake.client),
+                selectinload(Intake.approval),
+                selectinload(Intake.estimate),
+            )
+            .order_by(desc(Intake.created_at))
+            .limit(100)  # Last 100 intakes max
+        )
+        intakes = result.scalars().all()
+
+        output = []
+        for intake in intakes:
+            client = intake.client
+            approval = intake.approval
+            estimate = intake.estimate
+
+            # Get selected date from approval or in-memory store
+            selected_date = None
+            if intake.short_id in intake_store:
+                selected_date = intake_store[intake.short_id].get("selected_date")
+
+            # Get client message from memory store if available
+            client_message = ""
+            session_summary = ""
+            coverage = ""
+            image_count = 0
+            if intake.short_id in intake_store:
+                mem = intake_store[intake.short_id]
+                client_message = mem.get("client_message", "")
+                session_summary = mem.get("session_summary", "")
+                coverage = mem.get("coverage", "")
+                image_count = mem.get("image_count", 0)
+            elif intake.raw_crew_output:
+                # Parse from DB if not in memory
+                if "---SESSION SUMMARY---" in intake.raw_crew_output:
+                    parts = intake.raw_crew_output.split("---SESSION SUMMARY---")
+                    client_message = parts[0].replace("---CLIENT MESSAGE---", "").strip()
+                    session_summary = parts[1].strip()
+                else:
+                    client_message = intake.raw_crew_output.strip()
+
+            # Determine status — approval decision takes precedence
+            status = intake.status
+            if approval:
+                status = approval.decision
+
+            # Pricing from estimate table or PRICING_TIERS fallback
+            price_min = 0
+            price_max = 0
+            deposit = 0
+            session_type = intake.size_selection or ""
+            if estimate:
+                price_min = float(estimate.price_min or 0)
+                price_max = float(estimate.price_max or 0)
+                deposit = float(estimate.deposit_amount or 0)
+                session_type = estimate.session_type or session_type
+            elif intake.short_id in intake_store:
+                pricing = intake_store[intake.short_id].get("pricing", {})
+                price_min = pricing.get("price_min", 0)
+                price_max = pricing.get("price_max", 0)
+                deposit = pricing.get("deposit", 0)
+                session_type = pricing.get("session_type", session_type)
+
+            output.append({
+                "intake_id": intake.short_id,
+                "created_at": intake.created_at.isoformat() if intake.created_at else None,
+                "client_name": client.name if client else "Unknown",
+                "client_contact": client.contact if client else "",
+                "placement": intake.placement or "",
+                "coverage": coverage,
+                "description": intake.description or "",
+                "styles": intake.styles or [],
+                "is_cover_up": intake.is_cover_up,
+                "budget_range": intake.budget_range or "",
+                "preferred_timing": intake.preferred_timing or "",
+                "selected_date": selected_date,
+                "status": status,
+                "classification": intake.classification or "",
+                "price_min": price_min,
+                "price_max": price_max,
+                "deposit": deposit,
+                "session_type": session_type,
+                "client_message": client_message,
+                "session_summary": session_summary,
+                "image_count": image_count,
+            })
+
+        return {"intakes": output}
+
+    except Exception as e:
+        traceback.print_exc()
+        # Fallback to in-memory store if DB query fails
+        print(f">>> DB query failed, falling back to memory store: {e}")
+        result = []
+        for short_id, intake in intake_store.items():
+            result.append({
+                "intake_id": short_id,
+                "created_at": None,
+                "client_name": intake.get("client_name", ""),
+                "client_contact": intake.get("client_contact", ""),
+                "placement": intake.get("placement", ""),
+                "coverage": intake.get("coverage", ""),
+                "description": "",
+                "styles": [],
+                "is_cover_up": False,
+                "budget_range": "",
+                "preferred_timing": intake.get("preferred_timing", ""),
+                "selected_date": intake.get("selected_date"),
+                "status": intake.get("status", "pending"),
+                "classification": intake.get("classification", ""),
+                "price_min": intake.get("pricing", {}).get("price_min", 0),
+                "price_max": intake.get("pricing", {}).get("price_max", 0),
+                "deposit": intake.get("pricing", {}).get("deposit", 0),
+                "session_type": intake.get("pricing", {}).get("session_type", ""),
+                "client_message": intake.get("client_message", ""),
+                "session_summary": intake.get("session_summary", ""),
+                "image_count": intake.get("image_count", 0),
+            })
+        return {"intakes": list(reversed(result))}
 
 
 @app.post("/api/miguel/intake")

@@ -1,8 +1,8 @@
 {
-  "name": "Inkbook",
+  "name": "Inkbook Artist",
   "short_name": "Inkbook",
-  "description": "AI-powered tattoo booking for Miguel",
-  "start_url": "/",
+  "description": "Miguel's Inkbook artist dashboard",
+  "start_url": "/admin-inkbook-m1g",
   "display": "standalone",
   "background_color": "#0a0a0a",
   "theme_color": "#C9A84C",
