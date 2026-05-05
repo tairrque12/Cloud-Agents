@@ -9,6 +9,9 @@
 #
 # TELEGRAM ARCHITECTURE:
 # Telegram fires once — on /api/miguel/confirm-date (background task).
+# Webhook now has DB fallback — if intake_store is empty after a Render
+# restart, it reconstructs the intake from PostgreSQL so APPROVE/DECLINE
+# still works even after the server restarted between submission and reply.
 #
 # PRICING ARCHITECTURE:
 # Prices anchored to PRICING_TIERS by session type. Never scraped from prose.
@@ -16,14 +19,14 @@
 # IMAGE ARCHITECTURE:
 # reference_images accepts up to 3 base64 images. Stored in intake_store,
 # sent to Miguel's Telegram as photos when client confirms date.
+# Note: images are NOT stored in DB (too large). If Render restarts before
+# date confirmation, images are lost. Acceptable MVP limitation.
 #
 # COVERAGE ARCHITECTURE:
 # coverage field replaces ambiguous size (small/medium/large).
 #
 # ADMIN DASHBOARD ARCHITECTURE:
 # /api/miguel/intakes reads from PostgreSQL — persistent across restarts.
-# Joins intakes → clients → approvals to return full intake details.
-# In-memory intake_store used as fallback for intakes not yet in DB.
 
 from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +37,6 @@ from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload
 import sys
 import os
-import re
 import uuid
 import traceback
 
@@ -336,6 +338,91 @@ async def store_approval(
     return approval
 
 
+async def reconstruct_intake_from_db(
+    short_id: str,
+    db: AsyncSession
+) -> Optional[dict]:
+    """
+    Rebuilds an intake dict from PostgreSQL when intake_store is empty
+    after a Render restart. This is the DB fallback for the Telegram webhook.
+
+    Reconstructs everything needed to process APPROVE/DECLINE/ADJUST:
+    - client_name, client_contact from clients table
+    - client_message, session_summary from raw_crew_output
+    - classification, placement from intakes table
+    - artist_db_id, intake_db_id for approval storage
+
+    Images are NOT reconstructed (not stored in DB — MVP limitation).
+    """
+    try:
+        result = await db.execute(
+            select(Intake)
+            .options(
+                selectinload(Intake.client),
+                selectinload(Intake.artist),
+            )
+            .where(Intake.short_id == short_id)
+        )
+        intake_record = result.scalar_one_or_none()
+
+        if not intake_record:
+            return None
+
+        client = intake_record.client
+        artist = intake_record.artist
+
+        # Re-parse client_message and session_summary from raw crew output
+        client_message = ""
+        session_summary = ""
+        if intake_record.raw_crew_output:
+            client_message, session_summary = parse_crew_output(
+                intake_record.raw_crew_output
+            )
+
+        # Reconstruct pricing from size_selection
+        size_to_tier = {
+            "small": "small",
+            "medium": "half_day",
+            "large": "full_day",
+            "full_sleeve": "full_sleeve",
+        }
+        session_type = size_to_tier.get(intake_record.size_selection or "medium", "half_day")
+        tier = PRICING_TIERS.get(session_type, PRICING_TIERS["half_day"])
+
+        reconstructed = {
+            "client_name": client.name if client else "Unknown",
+            "client_contact": client.contact if client else "",
+            "client_message": client_message,
+            "session_summary": session_summary,
+            "classification": intake_record.classification or "STRONG",
+            "placement": intake_record.placement or "",
+            "coverage": "not specified",
+            "selected_date": None,
+            "pricing": {
+                "price_min": tier["min"],
+                "price_max": tier["max"],
+                "deposit": tier["deposit"],
+                "session_type": session_type,
+            },
+            "preferred_timing": intake_record.preferred_timing or "",
+            "image_count": 0,
+            "reference_images": [],  # Not stored in DB
+            "intake_id": short_id,
+            "intake_db_id": str(intake_record.id),
+            "artist_db_id": str(artist.id) if artist else "",
+            "status": intake_record.status or "pending",
+        }
+
+        # Cache back into memory so subsequent calls don't hit DB
+        intake_store[short_id] = reconstructed
+        print(f">>> Reconstructed intake {short_id} from DB after restart")
+        return reconstructed
+
+    except Exception as e:
+        print(f">>> DB reconstruction failed for {short_id}: {e}")
+        return None
+
+
 # ─────────────────────────────────────────
 # BACKGROUND TASK WRAPPER
 # ─────────────────────────────────────────
@@ -386,14 +473,9 @@ def health_check():
 async def get_intakes(db: AsyncSession = Depends(get_db)):
     """
     Returns all intakes from PostgreSQL for the admin dashboard.
-    Persistent across Render restarts — reads from DB not memory.
-    Joins intakes → clients for contact info.
-    Joins intakes → approvals for decision status.
-    Joins intakes → estimates for pricing.
-    Most recent intakes first.
+    Persistent across Render restarts.
     """
     try:
-        # Load intakes with related client and approval eagerly
         result = await db.execute(
             select(Intake)
             .options(
@@ -402,7 +484,7 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
                 selectinload(Intake.estimate),
             )
             .order_by(desc(Intake.created_at))
-            .limit(100)  # Last 100 intakes max
+            .limit(100)
         )
         intakes = result.scalars().all()
 
@@ -412,12 +494,10 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
             approval = intake.approval
             estimate = intake.estimate
 
-            # Get selected date from approval or in-memory store
             selected_date = None
             if intake.short_id in intake_store:
                 selected_date = intake_store[intake.short_id].get("selected_date")
 
-            # Get client message from memory store if available
             client_message = ""
             session_summary = ""
             coverage = ""
@@ -429,7 +509,6 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
                 coverage = mem.get("coverage", "")
                 image_count = mem.get("image_count", 0)
             elif intake.raw_crew_output:
-                # Parse from DB if not in memory
                 if "---SESSION SUMMARY---" in intake.raw_crew_output:
                     parts = intake.raw_crew_output.split("---SESSION SUMMARY---")
                     client_message = parts[0].replace("---CLIENT MESSAGE---", "").strip()
@@ -437,12 +516,10 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
                 else:
                     client_message = intake.raw_crew_output.strip()
 
-            # Determine status — approval decision takes precedence
             status = intake.status
             if approval:
                 status = approval.decision
 
-            # Pricing from estimate table or PRICING_TIERS fallback
             price_min = 0
             price_max = 0
             deposit = 0
@@ -487,7 +564,6 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
 
     except Exception as e:
         traceback.print_exc()
-        # Fallback to in-memory store if DB query fails
         print(f">>> DB query failed, falling back to memory store: {e}")
         result = []
         for short_id, intake in intake_store.items():
@@ -533,20 +609,17 @@ async def intake(
         print(f">>> Placement: {request.placement}")
         print(f">>> Coverage: {request.coverage}")
 
-        # ── STEP 1: Calendar dates ───────────────────────────────
         print(">>> Fetching calendar dates...")
         raw_calendar_dates = get_available_dates(size_db)
         print(f">>> Raw calendar dates: {raw_calendar_dates}")
         available_dates = format_dates_for_frontend(raw_calendar_dates)
         print(f">>> Formatted dates for frontend: {available_dates}")
 
-        # ── STEP 2: Resolve images ───────────────────────────────
         all_images = resolve_reference_images(request)
         image_count = len(all_images)
         primary_image = all_images[0] if all_images else None
         print(f">>> Reference images: {image_count} uploaded")
 
-        # ── STEP 3: Build form data for crew ─────────────────────
         form_data = {
             "client_name": request.client_name,
             "contact": request.contact,
@@ -569,7 +642,6 @@ async def intake(
 
         short_id = str(uuid.uuid4())[:8].upper()
 
-        # ── STEP 4: Fire crew ────────────────────────────────────
         print(">>> Firing crew...")
         result, classification = run_tattoo_intake_crew(form_data)
         print(">>> Crew complete")
@@ -581,7 +653,6 @@ async def intake(
         print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
               f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
 
-        # ── STEP 5: Database ─────────────────────────────────────
         artist = await get_miguel(db)
         client = await get_or_create_client(
             db=db,
@@ -607,7 +678,6 @@ async def intake(
         client.total_intakes = (client.total_intakes or 0) + 1
         await db.commit()
 
-        # ── STEP 6: Memory store ─────────────────────────────────
         intake_store[short_id] = {
             "client_name": request.client_name,
             "client_contact": request.contact,
@@ -658,11 +728,28 @@ async def confirm_date(
         short_id = request.intake_id
         selected_date = request.selected_date
 
+        # Try memory first, fall back to DB if not found
         if short_id not in intake_store:
-            raise HTTPException(status_code=404, detail="Intake not found.")
+            print(f">>> {short_id} not in memory — checking DB...")
+            reconstructed = await reconstruct_intake_from_db(short_id, db)
+            if not reconstructed:
+                raise HTTPException(status_code=404, detail="Intake not found.")
 
         intake = intake_store[short_id]
         intake_store[short_id]["selected_date"] = selected_date
+
+        # Also persist selected_date to DB via emotional_tone_note column
+        # (temporary storage — no migration needed, field is unused)
+        try:
+            result = await db.execute(
+                select(Intake).where(Intake.short_id == short_id)
+            )
+            intake_record = result.scalar_one_or_none()
+            if intake_record:
+                intake_record.emotional_tone_note = f"selected_date:{selected_date}"
+                await db.commit()
+        except Exception as e:
+            print(f">>> Could not persist selected_date to DB: {e}")
 
         if selected_date == NEEDS_ALTERNATE_DATES:
             print(f">>> Client signaled NONE OF THE DATES WORK: {short_id}")
@@ -710,28 +797,24 @@ async def approve(
 ):
     """
     Called by the admin dashboard when Miguel taps Approve or Decline.
-    Writes the decision to the approvals table and updates intake status
-    in the DB and in-memory store so the dashboard reflects it immediately.
+    Writes the decision to the approvals table and updates intake status.
     """
     try:
         short_id = request.intake_id
- 
+
         if request.decision not in ("approved", "declined", "adjusted"):
             raise HTTPException(status_code=400, detail="Invalid decision.")
- 
-        # ── Look up intake in DB ─────────────────────────────────
+
         result = await db.execute(
             select(Intake).where(Intake.short_id == short_id)
         )
         intake_record = result.scalar_one_or_none()
- 
+
         if not intake_record:
             raise HTTPException(status_code=404, detail="Intake not found.")
- 
-        # ── Get artist ID ────────────────────────────────────────
+
         artist = await get_miguel(db)
- 
-        # ── Get client message for approval record ───────────────
+
         client_message = ""
         if short_id in intake_store:
             client_message = intake_store[short_id].get("client_message", "")
@@ -741,16 +824,15 @@ async def approve(
                 client_message = parts[0].replace("---CLIENT MESSAGE---", "").strip()
             else:
                 client_message = intake_record.raw_crew_output.strip()
- 
-        # ── Check if approval already exists — update if so ──────
+
         existing = await db.execute(
             select(Approval).where(Approval.intake_id == intake_record.id)
         )
         existing_approval = existing.scalar_one_or_none()
- 
+
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
- 
+
         if existing_approval:
             existing_approval.decision = request.decision
             existing_approval.client_message_sent = client_message
@@ -766,23 +848,21 @@ async def approve(
                 client_message_sent=client_message,
                 adjusted_message=request.adjusted_message,
             )
- 
-        # ── Update intake status in DB ───────────────────────────
+
         intake_record.status = request.decision
         await db.commit()
- 
-        # ── Update in-memory store so dashboard reflects it ──────
+
         if short_id in intake_store:
             intake_store[short_id]["status"] = request.decision
- 
+
         print(f">>> Dashboard decision: {request.decision} → {short_id}")
- 
+
         return {
             "status": "success",
             "decision": request.decision,
             "intake_id": short_id
         }
- 
+
     except HTTPException:
         raise
     except Exception as e:
@@ -795,6 +875,13 @@ async def telegram_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    Handles Miguel's APPROVE/DECLINE/ADJUST replies on Telegram.
+
+    DB FALLBACK: If intake_store is empty after a Render restart,
+    reconstruct_intake_from_db() rebuilds the intake from PostgreSQL
+    so the approval flow still works. This is the core restart-safety fix.
+    """
     try:
         body = await request.json()
         message = body.get("message", {})
@@ -805,22 +892,40 @@ async def telegram_webhook(
         if chat_id != os.getenv("MIGUEL_CHAT_ID"):
             return {"status": "ignored"}
 
+        # Find the intake ID in the message
         short_id = None
         for word in text.split():
             candidate = word.upper().strip()
+            # Check memory first
             if candidate in intake_store:
                 short_id = candidate
                 break
+            # If not in memory, check if it looks like an intake ID (8 hex chars)
+            if len(candidate) == 8 and all(c in "0123456789ABCDEF" for c in candidate):
+                short_id = candidate
+                break
 
-        if not short_id or short_id not in intake_store:
+        if not short_id:
             send_telegram_message(
-                "No matching intake found.\n\n"
+                "No intake ID found in your message.\n\n"
                 "Reply with your decision and the intake ID:\n"
                 "✅ APPROVE C7D3828A\n"
                 "✏️ ADJUST C7D3828A\n"
                 "❌ DECLINE C7D3828A"
             )
-            return {"status": "no_matching_intake"}
+            return {"status": "no_id_found"}
+
+        # ── DB FALLBACK: reconstruct if not in memory ─────────────
+        if short_id not in intake_store:
+            print(f">>> {short_id} not in memory after restart — reconstructing from DB...")
+            reconstructed = await reconstruct_intake_from_db(short_id, db)
+            if not reconstructed:
+                send_telegram_message(
+                    f"No intake found for ID: {short_id}\n\n"
+                    "Double-check the ID and try again."
+                )
+                return {"status": "no_matching_intake"}
+            print(f">>> Successfully reconstructed {short_id} from DB")
 
         intake = intake_store[short_id]
 
