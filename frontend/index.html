@@ -9,13 +9,22 @@
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#C9A84C" />
 
-    <!-- iOS PWA — makes it feel native when added to home screen -->
+    <!-- iOS PWA -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Inkbook" />
 
-    <!-- SEO / share preview -->
+    <!-- SEO -->
     <meta name="description" content="Book a tattoo with Miguel. Instant estimate, real dates, no DMs." />
+
+    <!-- Google Analytics 4 -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZL74EXY0H6"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-ZL74EXY0H6');
+    </script>
 
     <title>Inkbook · Booking with Miguel</title>
   </head>
@@ -23,7 +32,7 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
 
-    <!-- Register service worker for PWA installability -->
+    <!-- Service worker for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
