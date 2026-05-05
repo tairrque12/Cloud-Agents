@@ -2,3 +2,5 @@
 venv/config/google_credentials.json
 venv/
 config/google_credentials.json
+__pycache__/
+*.pyc
