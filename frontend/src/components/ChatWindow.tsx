@@ -32,9 +32,20 @@ type Step =
   | 'reference' | 'budget' | 'timeline' | 'name' | 'contact' | 'processing'
 
 const STEP_SEQUENCE: Step[] = [
-  'description', 'placement', 'coverage', 'style', 'coverup',
-  'reference', 'budget', 'timeline', 'name', 'contact', 'processing'
+  'description', 'placement', 'coverage', 'name', 'contact', 'processing',
 ]
+
+// Progress indicator — one dot per intake step (excludes processing)
+const PROGRESS_STEPS = ['description', 'placement', 'coverage', 'name', 'contact'] as const
+type ProgressStep = (typeof PROGRESS_STEPS)[number]
+
+const PROGRESS_LABELS: Record<ProgressStep, string> = {
+  description: 'Tell us your idea',
+  placement: 'Placement',
+  coverage: 'Coverage',
+  name: 'Your name',
+  contact: 'Contact info',
+}
 
 // Placements where coverage is already implied — skip the coverage step
 const SKIP_COVERAGE_PLACEMENTS = new Set([
@@ -42,7 +53,8 @@ const SKIP_COVERAGE_PLACEMENTS = new Set([
   'Full Leg Sleeve',
 ])
 
-const FULL_WIDTH_CHIP_STEPS: Set<Step> = new Set(['coverage', 'budget', 'timeline'])
+const FULL_WIDTH_CHIP_STEPS: Set<Step> = new Set(['coverage'])
+// const FULL_WIDTH_CHIP_STEPS: Set<Step> = new Set(['coverage', 'budget', 'timeline'])
 
 // Coverage chips — placement label is interpolated into the question dynamically
 const COVERAGE_CHIPS: ChipOption[] = [
@@ -90,13 +102,13 @@ function getCoverageSession(coverage: string, placement: string): string {
 const STEP_QUESTIONS: Partial<Record<Step, string>> = {
   // coverage question is generated dynamically in advanceStep
   placement: 'Where on your body do you want this tattoo?',
-  style: 'What style are you drawn to?',
-  coverup: 'Is this a cover up of an existing tattoo?',
-  reference: "Upload up to 3 reference images. Photos help Miguel give a more accurate quote and prepare for your session.",
-  budget: "What's your rough budget for this piece?",
-  timeline: 'When are you looking to get this done?',
   name: "What's your name?",
   contact: "What's the best phone number to reach you?",
+  // style: 'What style are you drawn to?',
+  // coverup: 'Is this a cover up of an existing tattoo?',
+  // reference: "Upload up to 3 reference images. Photos help Miguel give a more accurate quote and prepare for your session.",
+  // budget: "What's your rough budget for this piece?",
+  // timeline: 'When are you looking to get this done?',
 }
 
 const CHIPS: Partial<Record<Step, ChipOption[]>> = {
@@ -106,10 +118,10 @@ const CHIPS: Partial<Record<Step, ChipOption[]>> = {
     'Leg', 'Full Leg Sleeve',
     'Torso', 'Hand', 'Neck', 'Other'
   ],
-  style: ['Realism', 'Traditional', 'Fine Line', 'Geometric', 'Blackwork', 'Not Sure'],
-  coverup: ['Yes', 'No'],
-  budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
-  timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
+  // style: ['Realism', 'Traditional', 'Fine Line', 'Geometric', 'Blackwork', 'Not Sure'],
+  // coverup: ['Yes', 'No'],
+  // budget: ['Under $200', '$200–$500', '$500–$1,000', '$1,000+'],
+  // timeline: ['Within 2 weeks', 'Within 1 month', 'Within 2 months', 'Flexible'],
 }
 
 const MAX_IMAGES = 3
@@ -199,7 +211,7 @@ export default function ChatWindow({ onComplete }: Props) {
     if (currentStep === 'placement' && SKIP_COVERAGE_PLACEMENTS.has(answer)) {
       // Set coverage to 'full' implicitly so backend has the value
       newAnswers['coverage'] = 'full'
-      nextStep = 'style'
+      nextStep = 'name'
     }
 
     setStep(nextStep)
@@ -320,16 +332,14 @@ export default function ChatWindow({ onComplete }: Props) {
           placement,
           // Send coverage explicitly so crew and Telegram card have it
           coverage,
-          styles: finalAnswers.style
-            ? [finalAnswers.style.toLowerCase().replace(' ', '_')]
-            : [],
-          is_cover_up: finalAnswers.coverup === 'Yes',
+          styles: [],
+          is_cover_up: false,
           cover_up_description: null,
-          budget_range: finalAnswers.budget ?? '',
-          preferred_timing: finalAnswers.timeline ?? '',
+          budget_range: '$500–$1,000',
+          preferred_timing: 'flexible',
           idea_readiness: 'knows_exactly',
-          reference_images: referenceImages,
-          reference_image: referenceImages[0] ?? null,
+          reference_images: [],
+          reference_image: null,
           guided_discovery: null,
         }),
       })
@@ -341,7 +351,7 @@ export default function ChatWindow({ onComplete }: Props) {
       const priceMin: number = typeof data.price_min === 'number' ? data.price_min : fallback.min
       const priceMax: number = typeof data.price_max === 'number' ? data.price_max : fallback.max
       const intakeId: string = data.intake_id ?? ''
-      const preferredTiming: string = data.preferred_timing ?? finalAnswers.timeline ?? ''
+      const preferredTiming: string = data.preferred_timing ?? 'flexible'
 
       let availableDates: string[] = []
       if (Array.isArray(data.available_dates) && data.available_dates.length > 0) {
@@ -371,7 +381,7 @@ export default function ChatWindow({ onComplete }: Props) {
           priceMin: fallback.min, priceMax: fallback.max,
           estimatedDate: 'Thursday · May 28',
           availableDates: ['Thursday · May 28', 'Monday · June 1', 'Wednesday · June 3'],
-          intakeId: '', preferredTiming: finalAnswers.timeline ?? '',
+          intakeId: '', preferredTiming: 'flexible',
           summary: "Miguel will review your request and confirm shortly. You'll receive a message with next steps.",
         })
       }, 2800)
@@ -380,7 +390,13 @@ export default function ChatWindow({ onComplete }: Props) {
     }
   }
 
-  const showInput = ['description', 'name', 'contact', 'placement'].includes(step)
+  const showInput = ['description', 'name', 'contact'].includes(step)
+  const showProgress = step !== 'processing' && !loading
+  const progressIndex = PROGRESS_STEPS.indexOf(step as ProgressStep)
+  const progressStepNum = progressIndex >= 0 ? progressIndex + 1 : 1
+  const progressLabel = progressIndex >= 0
+    ? PROGRESS_LABELS[PROGRESS_STEPS[progressIndex]]
+    : PROGRESS_LABELS.description
 
   return (
     <div style={{
@@ -406,6 +422,51 @@ export default function ChatWindow({ onComplete }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Progress indicator */}
+      {showProgress && (
+        <div style={{
+          padding: '12px 20px 10px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+        }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '10px',
+          }}>
+            {PROGRESS_STEPS.map((s, i) => {
+              const isActive = i === progressIndex
+              const isCompleted = i < progressIndex
+              return (
+                <div
+                  key={s}
+                  style={{
+                    width: isActive ? '8px' : '6px',
+                    height: isActive ? '8px' : '6px',
+                    borderRadius: '50%',
+                    background: isActive || isCompleted ? 'var(--gold)' : 'transparent',
+                    border: `1px solid ${isActive || isCompleted ? 'var(--gold)' : 'var(--border)'}`,
+                    opacity: isCompleted ? 0.45 : 1,
+                    transition: 'all 0.2s ease',
+                    flexShrink: 0,
+                  }}
+                />
+              )
+            })}
+          </div>
+          <div style={{
+            marginTop: '8px',
+            textAlign: 'center',
+            fontSize: '11px',
+            color: 'var(--text-muted)',
+            letterSpacing: '0.03em',
+          }}>
+            Step {progressStepNum} of 5 · {progressLabel}
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div style={{
@@ -615,7 +676,6 @@ export default function ChatWindow({ onComplete }: Props) {
             placeholder={
               step === 'name' ? 'Your name...' :
               step === 'contact' ? 'Your phone number...' :
-              step === 'placement' ? 'e.g. left forearm, right chest...' :
               'Describe your tattoo idea...'
             }
             style={{
