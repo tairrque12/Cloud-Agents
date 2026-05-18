@@ -185,7 +185,11 @@ export default function ChatWindow({ onComplete }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const t = setTimeout(
+      () => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }),
+      100
+    )
+    return () => clearTimeout(t)
   }, [messages, loading])
 
   const addAssistantMessage = (content: string, extras?: Partial<Message>) => {
@@ -400,8 +404,19 @@ export default function ChatWindow({ onComplete }: Props) {
 
   return (
     <div style={{
-      height: '100vh', display: 'flex', flexDirection: 'column',
-      background: 'var(--black)', maxWidth: '600px', margin: '0 auto',
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      height: '100dvh',
+      width: '100%',
+      boxSizing: 'border-box',
+      display: 'flex',
+      flexDirection: 'column',
+      background: 'var(--black)',
+      maxWidth: '600px',
+      margin: '0 auto',
     }}>
       {/* Header */}
       <div style={{
@@ -666,12 +681,20 @@ export default function ChatWindow({ onComplete }: Props) {
       {/* Input bar */}
       {showInput && (
         <div style={{
-          padding: '12px 16px', borderTop: '1px solid var(--border)',
+          padding: '12px 16px',
+          paddingBottom: 'calc(12px + env(safe-area-inset-bottom))',
+          borderTop: '1px solid var(--border)',
           display: 'flex', gap: '8px', flexShrink: 0,
         }}>
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
+            onFocus={() => {
+              setTimeout(
+                () => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }),
+                300
+              )
+            }}
             onKeyDown={e => e.key === 'Enter' && handleSend()}
             placeholder={
               step === 'name' ? 'Your name...' :
@@ -701,6 +724,8 @@ export default function ChatWindow({ onComplete }: Props) {
       )}
 
       <style>{`
+        * { -webkit-tap-highlight-color: transparent; }
+        input { font-size: 16px !important; }
         @keyframes pulse {
           0%, 100% { opacity: 0.3; transform: scale(0.8); }
           50% { opacity: 1; transform: scale(1); }
