@@ -32,17 +32,18 @@ type Step =
   | 'reference' | 'budget' | 'timeline' | 'name' | 'contact' | 'processing'
 
 const STEP_SEQUENCE: Step[] = [
-  'description', 'placement', 'coverage', 'name', 'contact', 'processing',
+  'description', 'placement', 'coverage', 'reference', 'name', 'contact', 'processing',
 ]
 
 // Progress indicator — one dot per intake step (excludes processing)
-const PROGRESS_STEPS = ['description', 'placement', 'coverage', 'name', 'contact'] as const
+const PROGRESS_STEPS = ['description', 'placement', 'coverage', 'reference', 'name', 'contact'] as const
 type ProgressStep = (typeof PROGRESS_STEPS)[number]
 
 const PROGRESS_LABELS: Record<ProgressStep, string> = {
   description: 'Tell us your idea',
   placement: 'Placement',
   coverage: 'Coverage',
+  reference: 'Reference images',
   name: 'Your name',
   contact: 'Contact info',
 }
@@ -104,9 +105,9 @@ const STEP_QUESTIONS: Partial<Record<Step, string>> = {
   placement: 'Where on your body do you want this tattoo?',
   name: "What's your name?",
   contact: "What's the best phone number to reach you?",
+  reference: "Upload up to 3 reference images. Photos help Miguel give a more accurate quote and prepare for your session.",
   // style: 'What style are you drawn to?',
   // coverup: 'Is this a cover up of an existing tattoo?',
-  // reference: "Upload up to 3 reference images. Photos help Miguel give a more accurate quote and prepare for your session.",
   // budget: "What's your rough budget for this piece?",
   // timeline: 'When are you looking to get this done?',
 }
@@ -215,7 +216,7 @@ export default function ChatWindow({ onComplete }: Props) {
     if (currentStep === 'placement' && SKIP_COVERAGE_PLACEMENTS.has(answer)) {
       // Set coverage to 'full' implicitly so backend has the value
       newAnswers['coverage'] = 'full'
-      nextStep = 'name'
+      nextStep = 'reference'
     }
 
     setStep(nextStep)
@@ -223,6 +224,13 @@ export default function ChatWindow({ onComplete }: Props) {
     setTimeout(() => {
       if (nextStep === 'processing') {
         submitToBackend(newAnswers)
+      } else if (nextStep === 'reference') {
+        setUploadDone(false)
+        const question = STEP_QUESTIONS.reference!
+        addAssistantMessage(question, {
+          isUpload: true,
+          stepKey: 'reference',
+        })
       } else if (nextStep === 'coverage') {
         // Dynamic coverage question based on placement
         const placement = newAnswers['placement'] ?? 'that area'
@@ -240,7 +248,6 @@ export default function ChatWindow({ onComplete }: Props) {
         const fullWidthChips = FULL_WIDTH_CHIP_STEPS.has(nextStep)
         addAssistantMessage(question, {
           chips,
-          isUpload: nextStep === 'reference',
           stepKey: nextStep,
           fullWidthChips,
         })
@@ -342,8 +349,8 @@ export default function ChatWindow({ onComplete }: Props) {
           budget_range: '$500–$1,000',
           preferred_timing: 'flexible',
           idea_readiness: 'knows_exactly',
-          reference_images: [],
-          reference_image: null,
+          reference_images: referenceImages,
+          reference_image: referenceImages[0] ?? null,
           guided_discovery: null,
         }),
       })
@@ -478,7 +485,7 @@ export default function ChatWindow({ onComplete }: Props) {
             color: 'var(--text-muted)',
             letterSpacing: '0.03em',
           }}>
-            Step {progressStepNum} of 5 · {progressLabel}
+            Step {progressStepNum} of 6 · {progressLabel}
           </div>
         </div>
       )}
