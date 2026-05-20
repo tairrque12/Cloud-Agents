@@ -702,7 +702,9 @@ async def intake(
             budget_db=budget_db,
             timing_db=timing_db,
             size_db=size_db,
-            primary_image_url=primary_image
+            # Do not persist base64 in Postgres — images live in intake_store only
+            # (Neon/console queries fail when reference_image_url holds multi-MB data URLs)
+            primary_image_url="uploaded" if primary_image else None
         )
         print(f">>> Stored intake: {short_id}")
 
