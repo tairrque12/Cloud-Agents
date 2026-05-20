@@ -523,3 +523,21 @@ INSERT INTO artists (
     60,
     NOW()
 );
+
+CREATE TABLE IF NOT EXISTS beta_applications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    name VARCHAR(100) NOT NULL,
+    instagram VARCHAR(100) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending'
+);
+
+CREATE TABLE IF NOT EXISTS beta_applications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    name VARCHAR(100) NOT NULL,
+    instagram VARCHAR(100) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending'
+);

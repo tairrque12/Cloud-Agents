@@ -348,3 +348,23 @@ class Booking(Base):
     artist: Mapped["Artist"] = relationship(back_populates="bookings")
     client: Mapped["Client"] = relationship(back_populates="bookings")
     intake: Mapped["Intake"] = relationship(back_populates="booking")
+
+
+class BetaApplication(Base):
+    __tablename__ = "beta_applications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+    name: Mapped[str] = mapped_column(String(100))
+    instagram: Mapped[str] = mapped_column(String(100))
+    email: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending"
+    )

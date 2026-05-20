@@ -52,7 +52,7 @@ from tools.telegram_notifier import (
     send_client_custom_message
 )
 from db.database import get_db
-from db.models import Artist, Client, Intake, Estimate, Approval
+from db.models import Artist, Client, Intake, Estimate, Approval, BetaApplication
 
 app = FastAPI(
     title="Inkbook API",
@@ -160,6 +160,11 @@ class ApprovalRequest(BaseModel):
 class DateConfirmRequest(BaseModel):
     intake_id: str
     selected_date: str
+
+class BetaApplicationRequest(BaseModel):
+    name: str
+    instagram: str
+    email: str
 
 # ─────────────────────────────────────────
 # IN-MEMORY STORE
@@ -467,6 +472,32 @@ def health_check():
         "artist": "Miguel",
         "version": "0.1.0"
     }
+
+
+@app.post("/api/beta/apply")
+async def beta_apply(
+    request: BetaApplicationRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        application = BetaApplication(
+            name=request.name.strip(),
+            instagram=request.instagram.strip(),
+            email=request.email.strip().lower(),
+        )
+        db.add(application)
+        await db.commit()
+        print(f">>> Beta application: {request.name} · {request.instagram} · {request.email}")
+        return {
+            "status": "success",
+            "message": "Application received"
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Application failed: {str(e)}"
+        )
 
 
 @app.get("/api/miguel/intakes")
