@@ -1,200 +1,432 @@
 // src/components/LandingPage.tsx
-// Inkbook — Landing Page
-// Angle: "Booking with Miguel is easy"
-// Sells simplicity — no DMs, no waiting, instant estimate, real dates
+// Inkbook — Platform marketing page (founding artist waitlist)
+
+import { useState, type CSSProperties, type FocusEvent } from 'react'
+
+const API_BASE = 'https://inkbook-4tlr.onrender.com'
 
 interface Props {
   onStart: () => void
 }
 
+const STATS = [
+  { value: '4–7', lines: ['Days of DMs saved', 'per booking'] },
+  { value: '90s', lines: ['From inquiry', 'to estimate'] },
+  { value: '100%', lines: ['You control', 'every booking'] },
+]
+
 export default function LandingPage({ onStart }: Props) {
+  const [name, setName] = useState('')
+  const [instagram, setInstagram] = useState('')
+  const [email, setEmail] = useState('')
+  const [submitted, setSubmitted] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const [errors, setErrors] = useState({ name: false, instagram: false, email: false })
+
+  const inputBorder = (field: keyof typeof errors) =>
+    errors[field]
+      ? '1px solid rgba(220,80,80,0.6)'
+      : '1px solid rgba(201,168,76,0.15)'
+
+  const inputStyle = (field: keyof typeof errors): CSSProperties => ({
+    background: 'rgba(255,255,255,0.03)',
+    border: inputBorder(field),
+    color: 'var(--text)',
+    padding: '14px 18px',
+    fontSize: '16px',
+    borderRadius: '2px',
+    outline: 'none',
+    width: '100%',
+    boxSizing: 'border-box',
+  })
+
+  const focusHandlers = {
+    onFocus: (e: FocusEvent<HTMLInputElement>) => {
+      if (!e.currentTarget.style.border.includes('220,80,80')) {
+        e.currentTarget.style.borderColor = 'rgba(201,168,76,0.45)'
+      }
+    },
+    onBlur: (e: FocusEvent<HTMLInputElement>) => {
+      const field = e.currentTarget.dataset.field as keyof typeof errors
+      e.currentTarget.style.borderColor = errors[field]
+        ? 'rgba(220,80,80,0.6)'
+        : 'rgba(201,168,76,0.15)'
+    },
+  }
+
+  const handleSubmit = async () => {
+    const nextErrors = {
+      name: !name.trim(),
+      instagram: !instagram.trim(),
+      email: !email.trim(),
+    }
+    setErrors(nextErrors)
+    setSubmitError('')
+    if (nextErrors.name || nextErrors.instagram || nextErrors.email) return
+
+    setSubmitting(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/beta/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          instagram: instagram.trim(),
+          email: email.trim(),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(
+          typeof data.detail === 'string'
+            ? data.detail
+            : 'Something went wrong. Please try again.'
+        )
+      }
+      setSubmitted(true)
+    } catch (err) {
+      setSubmitError(
+        err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '60px 24px 48px',
-      background: 'var(--black)',
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      {/* Background glow */}
+    <div
+      className="inkbook-landing"
+      style={{
+        background: 'var(--black)',
+        minHeight: '100vh',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '80px 24px 120px',
+        position: 'relative',
+        overflow: 'hidden',
+        color: 'var(--text)',
+        textAlign: 'center',
+        boxSizing: 'border-box',
+      }}
+    >
       <div style={{
         position: 'absolute',
-        width: '500px',
-        height: '500px',
-        borderRadius: '50%',
-        background: 'radial-gradient(circle, rgba(201,168,76,0.06) 0%, transparent 70%)',
-        pointerEvents: 'none',
         top: '50%',
         left: '50%',
         transform: 'translate(-50%, -50%)',
+        width: '600px',
+        height: '600px',
+        borderRadius: '50%',
+        background: 'radial-gradient(circle, rgba(201,168,76,0.05) 0%, transparent 65%)',
+        pointerEvents: 'none',
       }} />
 
-      {/* Ink drop */}
       <div style={{
-        width: '36px',
-        height: '36px',
-        borderRadius: '50% 50% 50% 0',
-        background: 'var(--gold)',
-        transform: 'rotate(-45deg)',
-        marginBottom: '24px',
-        flexShrink: 0,
-      }} />
-
-      {/* Brand name */}
-      <h1 style={{
-        fontFamily: 'var(--font-display)',
-        fontSize: 'clamp(44px, 9vw, 72px)',
-        fontWeight: 300,
-        letterSpacing: '0.04em',
-        textAlign: 'center',
-        lineHeight: 1.1,
-        marginBottom: '8px',
-      }}>
-        Inkbook
-      </h1>
-
-      {/* Credentials line — establishes trust upfront with skin tone messaging */}
-      <p style={{
-        color: 'var(--gold)',
-        fontSize: '11px',
-        letterSpacing: '0.18em',
-        textTransform: 'uppercase',
-        marginBottom: '44px',
-        textAlign: 'center',
-        lineHeight: 1.6,
-        maxWidth: '340px',
-      }}>
-        Black and Grey Realism · All Skin Tones Welcome · Austin, TX
-      </p>
-
-      {/* Hero */}
-      <div style={{ textAlign: 'center', maxWidth: '320px', marginBottom: '36px' }}>
-        <h2 style={{
-          fontSize: 'clamp(20px, 5vw, 26px)',
-          fontWeight: 300,
-          lineHeight: 1.4,
-          marginBottom: '14px',
-        }}>
-          Booking with Miguel<br />just got easy.
-        </h2>
-        <p style={{
-          color: 'var(--text-muted)',
-          fontSize: '14px',
-          fontWeight: 300,
-          lineHeight: 1.8,
-        }}>
-          No DMs. No waiting on an estimate.<br />No guessing on open dates.
-        </p>
-      </div>
-
-      {/* How it works */}
-      <div style={{
-        width: '100%',
-        maxWidth: '360px',
-        border: '1px solid var(--border)',
         position: 'relative',
-        marginBottom: '36px',
+        zIndex: 1,
+        width: '100%',
+        maxWidth: '480px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
       }}>
-        <div style={{ position: 'absolute', top: 0, left: 0, width: '20px', height: '20px', borderTop: '1px solid var(--gold)', borderLeft: '1px solid var(--gold)' }} />
-        <div style={{ position: 'absolute', bottom: 0, right: 0, width: '20px', height: '20px', borderBottom: '1px solid var(--gold)', borderRight: '1px solid var(--gold)' }} />
+        {/* Wordmark */}
+        <div style={{
+          fontSize: '11px',
+          letterSpacing: '0.28em',
+          textTransform: 'uppercase',
+          color: 'var(--gold)',
+          opacity: 0.7,
+          marginBottom: '80px',
+        }}>
+          <span style={{
+            width: '10px',
+            height: '10px',
+            borderRadius: '50% 50% 50% 0',
+            background: 'var(--gold)',
+            transform: 'rotate(-45deg)',
+            display: 'inline-block',
+            marginRight: '10px',
+            verticalAlign: 'middle',
+            opacity: 0.7,
+          }} />
+          Inkbook
+        </div>
 
-        {[
-          { step: '01', title: 'Describe your idea', sub: 'Answer 6 quick questions — takes about 2 minutes' },
-          { step: '02', title: 'Get an instant estimate', sub: 'Real price range and deposit amount — no waiting' },
-          { step: '03', title: 'Pick a real open date', sub: "Pulled from Miguel's live calendar — no back and forth" },
-        ].map((item, i) => (
-          <div key={i} style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '16px',
-            padding: '18px 22px',
-            borderBottom: i < 2 ? '1px solid var(--border)' : 'none',
-          }}>
-            <span style={{
-              fontFamily: 'var(--font-display)',
-              fontSize: '10px',
-              color: 'var(--gold)',
-              letterSpacing: '0.1em',
-              opacity: 0.6,
-              marginTop: '3px',
-              flexShrink: 0,
-              width: '18px',
-            }}>
-              {item.step}
-            </span>
-            <div>
-              <p style={{ fontSize: '13px', fontWeight: 500, marginBottom: '3px' }}>{item.title}</p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 300, lineHeight: 1.5 }}>{item.sub}</p>
+        {/* Headline */}
+        <h1
+          className="inkbook-headline"
+          style={{
+            fontFamily: 'var(--font-display)',
+            fontWeight: 300,
+            lineHeight: 1.1,
+            fontSize: 'clamp(36px, 6vw, 64px)',
+            letterSpacing: '-0.02em',
+            color: 'var(--text)',
+            maxWidth: '680px',
+            marginBottom: '28px',
+          }}
+        >
+          Every hour spent on DMs<br />
+          is an hour not spent<br />
+          <span style={{ color: 'var(--gold)' }}>on the work.</span>
+        </h1>
+
+        {/* Body */}
+        <p style={{
+          fontSize: '16px',
+          color: 'var(--text-muted)',
+          lineHeight: 1.9,
+          fontWeight: 300,
+          maxWidth: '400px',
+          marginBottom: '64px',
+        }}>
+          Inkbook handles your client intake — pricing,
+          scheduling, and quotes — so the only decision
+          left is yours. Review. Approve. Get back to the art.
+        </p>
+
+        {/* Form */}
+        <div style={{ width: '100%', maxWidth: '360px', marginBottom: submitted ? '48px' : '0' }}>
+          {submitted ? (
+            <div style={{ marginBottom: '100px' }}>
+              <p style={{
+                color: 'var(--gold)',
+                fontSize: '11px',
+                letterSpacing: '0.2em',
+                textTransform: 'uppercase',
+              }}>
+                Application received
+              </p>
+              <p style={{
+                fontSize: '18px',
+                fontWeight: 300,
+                marginTop: '12px',
+                color: 'var(--text-muted)',
+                lineHeight: 1.7,
+              }}>
+                We'll be in touch as we<br />
+                onboard founding artists.
+              </p>
             </div>
-          </div>
-        ))}
+          ) : (
+            <>
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                marginBottom: '20px',
+              }}>
+                <input
+                  type="text"
+                  className="inkbook-input"
+                  data-field="name"
+                  placeholder="Your name"
+                  value={name}
+                  disabled={submitting}
+                  onChange={e => {
+                    setName(e.target.value)
+                    if (errors.name) setErrors(prev => ({ ...prev, name: false }))
+                  }}
+                  style={inputStyle('name')}
+                  {...focusHandlers}
+                />
+                <input
+                  type="text"
+                  className="inkbook-input"
+                  data-field="instagram"
+                  placeholder="Instagram handle"
+                  value={instagram}
+                  disabled={submitting}
+                  onChange={e => {
+                    setInstagram(e.target.value)
+                    if (errors.instagram) setErrors(prev => ({ ...prev, instagram: false }))
+                  }}
+                  style={inputStyle('instagram')}
+                  {...focusHandlers}
+                />
+                <input
+                  type="email"
+                  className="inkbook-input"
+                  data-field="email"
+                  placeholder="Email address"
+                  value={email}
+                  disabled={submitting}
+                  onChange={e => {
+                    setEmail(e.target.value)
+                    if (errors.email) setErrors(prev => ({ ...prev, email: false }))
+                  }}
+                  style={inputStyle('email')}
+                  {...focusHandlers}
+                />
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={submitting}
+                  style={{
+                    background: 'var(--gold)',
+                    color: 'var(--black)',
+                    fontSize: '11px',
+                    letterSpacing: '0.18em',
+                    textTransform: 'uppercase',
+                    fontWeight: 700,
+                    border: 'none',
+                    padding: '16px',
+                    width: '100%',
+                    borderRadius: '2px',
+                    marginTop: '4px',
+                    cursor: submitting ? 'wait' : 'pointer',
+                    opacity: submitting ? 0.7 : 1,
+                    transition: 'opacity 0.15s ease',
+                  }}
+                  onMouseEnter={e => {
+                    if (!submitting) e.currentTarget.style.opacity = '0.88'
+                  }}
+                  onMouseLeave={e => {
+                    if (!submitting) e.currentTarget.style.opacity = '1'
+                  }}
+                >
+                  {submitting ? 'Submitting...' : 'Apply for founding access →'}
+                </button>
+              </div>
+
+              {submitError && (
+                <p style={{
+                  color: 'rgba(220,80,80,0.85)',
+                  fontSize: '12px',
+                  marginBottom: '16px',
+                  lineHeight: 1.5,
+                }}>
+                  {submitError}
+                </p>
+              )}
+
+              <p style={{
+                fontSize: '11px',
+                color: 'var(--text-muted)',
+                letterSpacing: '0.06em',
+                opacity: 0.5,
+                marginBottom: '100px',
+              }}>
+                No contracts · No setup fees during beta
+              </p>
+            </>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div style={{
+          width: '1px',
+          height: '48px',
+          margin: '0 auto 48px',
+          background: 'linear-gradient(to bottom, transparent, rgba(201,168,76,0.25), transparent)',
+        }} />
+
+        {/* Stats */}
+        <div
+          className="inkbook-stats"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'center',
+            gap: '48px',
+            marginBottom: '24px',
+            width: '100%',
+          }}
+        >
+          {STATS.map(stat => (
+            <div key={stat.value} className="inkbook-stat">
+              <p style={{
+                fontSize: '28px',
+                fontWeight: 300,
+                color: 'var(--gold)',
+                letterSpacing: '-0.02em',
+                marginBottom: '4px',
+                fontFamily: 'var(--font-display)',
+              }}>
+                {stat.value}
+              </p>
+              {stat.lines.map(line => (
+                <p
+                  key={line}
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--text-muted)',
+                    letterSpacing: '0.1em',
+                    textTransform: 'uppercase',
+                    lineHeight: 1.5,
+                    opacity: 0.6,
+                  }}
+                >
+                  {line}
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* CTA button */}
-      <button
-        onClick={onStart}
-        style={{
-          width: '100%',
-          maxWidth: '360px',
-          padding: '16px',
-          background: 'var(--gold)',
-          color: 'var(--black)',
-          fontSize: '12px',
-          letterSpacing: '0.15em',
-          textTransform: 'uppercase',
-          fontWeight: 700,
-          border: 'none',
-          borderRadius: '2px',
-          cursor: 'pointer',
-          marginBottom: '20px',
-          transition: 'opacity 0.15s ease',
-        }}
-        onMouseEnter={e => (e.currentTarget.style.opacity = '0.88')}
-        onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
-      >
-        Get My Estimate →
-      </button>
-
-      {/* Instagram */}
-      <a
-        href="https://www.instagram.com/miguel_tattoos"
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          color: 'var(--text-muted)',
-          fontSize: '12px',
-          letterSpacing: '0.06em',
-          textDecoration: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          transition: 'color 0.15s ease',
-        }}
-        onMouseEnter={e => (e.currentTarget.style.color = 'var(--gold)')}
-        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
-          <circle cx="12" cy="12" r="4"/>
-          <circle cx="17.5" cy="6.5" r="0.5" fill="currentColor"/>
-        </svg>
-        @miguel_tattoos
-      </a>
-
-      <p style={{
-        color: 'var(--text-muted)',
-        fontSize: '10px',
-        letterSpacing: '0.1em',
-        textTransform: 'uppercase',
-        opacity: 0.35,
-        marginTop: '40px',
+      {/* Footer */}
+      <footer style={{
+        position: 'absolute',
+        bottom: '28px',
+        left: 0,
+        right: 0,
+        zIndex: 1,
       }}>
-        Powered by Inkbook
-      </p>
+        <p style={{
+          fontSize: '10px',
+          color: 'var(--text-muted)',
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          opacity: 0.5,
+          marginBottom: '8px',
+        }}>
+          Inkbook · Built for artists
+        </p>
+        <span
+          onClick={onStart}
+          role="button"
+          tabIndex={0}
+          onKeyDown={e => e.key === 'Enter' && onStart()}
+          style={{
+            fontSize: '10px',
+            color: 'var(--text-muted)',
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            opacity: 0.25,
+            cursor: 'pointer',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.opacity = '0.5')}
+          onMouseLeave={e => (e.currentTarget.style.opacity = '0.25')}
+        >
+          Already on Inkbook?
+        </span>
+      </footer>
+
+      <style>{`
+        .inkbook-input::placeholder {
+          color: rgba(232,229,223,0.22);
+        }
+        @media (max-width: 480px) {
+          .inkbook-landing {
+            padding: 60px 20px 100px !important;
+          }
+          .inkbook-headline {
+            font-size: clamp(32px, 8vw, 48px) !important;
+          }
+          .inkbook-stats {
+            gap: 32px !important;
+          }
+          .inkbook-stat {
+            flex: 1 1 80px !important;
+          }
+        }
+      `}</style>
     </div>
   )
 }
