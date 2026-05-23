@@ -86,7 +86,7 @@ Examples: Simple symbols, words, dates,
 
 Half Day
 Duration: 3-5 hours
-Price: $300-500 estimated
+Price: $400-600 estimated
 Deposit: $100
 Examples: Detailed forearm pieces, portraits,
   animals, medium geometric work

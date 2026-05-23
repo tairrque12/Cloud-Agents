@@ -149,6 +149,7 @@ class Intake(Base):
     guided_style_notes: Mapped[str | None] = mapped_column(Text)
     raw_crew_output: Mapped[str | None] = mapped_column(Text)
     emotional_tone_note: Mapped[str | None] = mapped_column(Text)
+    selected_date: Mapped[str | None] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="pending")
 
     # Relationships

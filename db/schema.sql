@@ -158,6 +158,10 @@ CREATE TABLE intakes (
     raw_crew_output     TEXT,
     emotional_tone_note TEXT,
 
+    -- Client's chosen appointment date (formatted string, e.g. "Saturday · June 6")
+    -- Populated by /api/miguel/confirm-date. Null until client selects.
+    selected_date       VARCHAR(200),
+
     -- Status
     status              VARCHAR(20) DEFAULT 'pending'
                         CHECK (status IN (

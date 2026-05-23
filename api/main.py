@@ -402,7 +402,7 @@ async def reconstruct_intake_from_db(
             "classification": intake_record.classification or "STRONG",
             "placement": intake_record.placement or "",
             "coverage": "not specified",
-            "selected_date": None,
+            "selected_date": intake_record.selected_date,
             "pricing": {
                 "price_min": tier["min"],
                 "price_max": tier["max"],
@@ -528,6 +528,8 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
             selected_date = None
             if intake.short_id in intake_store:
                 selected_date = intake_store[intake.short_id].get("selected_date")
+            if selected_date is None:
+                selected_date = intake.selected_date
 
             client_message = ""
             session_summary = ""
@@ -771,15 +773,14 @@ async def confirm_date(
         intake = intake_store[short_id]
         intake_store[short_id]["selected_date"] = selected_date
 
-        # Also persist selected_date to DB via emotional_tone_note column
-        # (temporary storage — no migration needed, field is unused)
+        # Persist selected_date to its dedicated DB column
         try:
             result = await db.execute(
                 select(Intake).where(Intake.short_id == short_id)
             )
             intake_record = result.scalar_one_or_none()
             if intake_record:
-                intake_record.emotional_tone_note = f"selected_date:{selected_date}"
+                intake_record.selected_date = selected_date
                 await db.commit()
         except Exception as e:
             print(f">>> Could not persist selected_date to DB: {e}")

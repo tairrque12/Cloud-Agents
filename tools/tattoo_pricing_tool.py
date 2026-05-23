@@ -20,9 +20,9 @@ ARTIST_RATES = {
     },
     "half_day": {
         "label": "Half day session",
-        "price_range": "$300 - $500",
-        "price_min": 300,
-        "price_max": 500,
+        "price_range": "$400 - $600",
+        "price_min": 400,
+        "price_max": 600,
         "deposit": 100,
         "estimated_time": "3-5 hours",
     },
