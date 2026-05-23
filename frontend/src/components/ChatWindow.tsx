@@ -206,8 +206,7 @@ export default function ChatWindow({ onComplete }: Props) {
     answer: string,
     newAnswersOverride?: Record<string, string>
   ) => {
-    const newAnswers = { ...(newAnswersOverride ?? answers), [currentStep]: answer }
-    setAnswers(newAnswers)
+    let newAnswers = { ...(newAnswersOverride ?? answers), [currentStep]: answer }
 
     const idx = STEP_SEQUENCE.indexOf(currentStep)
     let nextStep = STEP_SEQUENCE[idx + 1] as Step
@@ -215,10 +214,11 @@ export default function ChatWindow({ onComplete }: Props) {
     // Skip coverage step for full sleeve/leg placements
     if (currentStep === 'placement' && SKIP_COVERAGE_PLACEMENTS.has(answer)) {
       // Set coverage to 'full' implicitly so backend has the value
-      newAnswers['coverage'] = 'full'
+      newAnswers = { ...newAnswers, coverage: 'full' }
       nextStep = 'reference'
     }
 
+    setAnswers(newAnswers)
     setStep(nextStep)
 
     setTimeout(() => {

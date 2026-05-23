@@ -348,7 +348,9 @@ export default function AdminDashboard() {
   }
 
   useEffect(() => {
-    if (authed) fetchIntakes()
+    if (!authed) return
+    const id = setTimeout(fetchIntakes, 0)
+    return () => clearTimeout(id)
   }, [authed])
 
   if (!authed) {
