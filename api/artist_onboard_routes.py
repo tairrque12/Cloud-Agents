@@ -187,7 +187,6 @@ def artist_full_config(artist: Artist) -> dict[str, Any]:
         "name": artist.name,
         "studio_name": artist.studio_name,
         "bio": artist.bio,
-        "bio_short": artist.bio,
         "specialties": artist.specialties or [],
         "pricing_tiers": pricing_tiers_from_db(artist.pricing_config),
         "pricing_config": artist.pricing_config or {},
