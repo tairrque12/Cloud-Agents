@@ -125,7 +125,7 @@ def artist_public_profile(artist: Artist) -> dict[str, Any]:
         "state": artist.state,
         "location": ", ".join(location_parts) if location_parts else None,
         "studio_name": artist.studio_name,
-        "bio_short": artist.bio_short,
+        "bio": artist.bio,
         "specialties": artist.specialties or [],
         "booking_url": f"/book/{artist.slug}",
         "status": artist.status,

@@ -44,7 +44,6 @@ class Artist(Base):
     city: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str | None] = mapped_column(String(50))
     studio_name: Mapped[str | None] = mapped_column(String(150))
-    bio_short: Mapped[str | None] = mapped_column(Text)
     bio: Mapped[str | None] = mapped_column(Text)
     specialties: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     pricing_config: Mapped[dict | None] = mapped_column(JSONB)

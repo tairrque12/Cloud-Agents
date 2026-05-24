@@ -572,7 +572,7 @@ async def onboard_artist(
             city=request.city.strip(),
             state=(request.state or "").strip() or None,
             studio_name=(request.studio_name or "").strip() or None,
-            bio_short=bio,
+            bio=bio,
             specialties=request.specialties or [],
             pricing_config=pricing_config,
             admin_secret=admin_secret,
