@@ -29,12 +29,10 @@ function locationLabel(city: string | null, state: string | null): string {
 export default function LandingPage() {
   const [artists, setArtists] = useState<LandingArtist[]>([])
   const [loading, setLoading] = useState(true)
-  const [fetchError, setFetchError] = useState('')
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    setFetchError('')
 
     fetch(listArtistsUrl())
       .then(async (res) => {
@@ -46,11 +44,8 @@ export default function LandingPage() {
           setArtists(data.artists ?? [])
         }
       })
-      .catch((err) => {
+      .catch(() => {
         if (!cancelled) {
-          setFetchError(
-            err instanceof Error ? err.message : 'Could not load artists'
-          )
           setArtists([])
         }
       })
@@ -144,13 +139,7 @@ export default function LandingPage() {
           </div>
         )}
 
-        {!loading && fetchError && (
-          <p style={{ textAlign: 'center', color: '#e07070', padding: '32px 0' }}>
-            {fetchError}
-          </p>
-        )}
-
-        {!loading && !fetchError && artists.length === 0 && (
+        {!loading && artists.length === 0 && (
           <p
             style={{
               textAlign: 'center',
@@ -163,7 +152,7 @@ export default function LandingPage() {
           </p>
         )}
 
-        {!loading && !fetchError && artists.length > 0 && (
+        {!loading && artists.length > 0 && (
           <div className="artist-grid">
             {artists.map((artist) => (
               <ArtistCard key={artist.id} artist={artist} />

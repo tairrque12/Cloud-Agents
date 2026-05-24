@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from api.artist_helpers import (
     allocate_unique_slug,
@@ -26,8 +27,9 @@ router = APIRouter(prefix="/api/artists", tags=["artist-onboard"])
 
 
 def _artist_bio(artist: Artist) -> str | None:
-    if artist.bio and artist.bio.strip():
-        return artist.bio.strip()
+    bio = getattr(artist, "bio", None)
+    if bio and str(bio).strip():
+        return str(bio).strip()
     if artist.bio_short and artist.bio_short.strip():
         return artist.bio_short.strip()
     return None
@@ -42,12 +44,33 @@ def _artist_specialties(artist: Artist) -> list[str]:
 @router.get("")
 async def list_active_artists(db: AsyncSession = Depends(get_db)):
     """Public list of active artists for the landing page."""
-    result = await db.execute(
-        select(Artist)
-        .where(Artist.status == "active")
-        .order_by(Artist.name)
-    )
-    artists = result.scalars().all()
+    try:
+        result = await db.execute(
+            select(Artist)
+            .options(
+                load_only(
+                    Artist.id,
+                    Artist.name,
+                    Artist.slug,
+                    Artist.city,
+                    Artist.state,
+                    Artist.instagram_handle,
+                    Artist.specialties,
+                    Artist.bio_short,
+                    Artist.status,
+                )
+            )
+            .where(Artist.status == "active")
+            .order_by(Artist.name)
+        )
+        artists = result.scalars().all()
+    except SQLAlchemyError:
+        logging.exception("list_active_artists database error")
+        raise HTTPException(
+            status_code=503,
+            detail="Artist directory is temporarily unavailable.",
+        )
+
     return {
         "artists": [
             {
