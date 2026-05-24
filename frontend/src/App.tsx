@@ -3,10 +3,11 @@ import ChatWindow from './components/ChatWindow'
 import EstimateCard from './components/EstimateCard'
 import AdminDashboard from './components/AdminDashboard'
 import ArtistOnboarding from './components/ArtistOnboarding'
+import LandingPage from './components/LandingPage'
 import { MIGUEL_FALLBACK, type ArtistProfile } from './types/artist'
 import { artistProfilePath } from './config'
 
-export type Screen = 'chat' | 'estimate' | 'admin' | 'onboard'
+export type Screen = 'landing' | 'chat' | 'estimate' | 'admin' | 'onboard'
 
 export interface Estimate {
   priceMin: number
@@ -45,7 +46,11 @@ function parseRoute(path = window.location.pathname): {
 } {
   const p = normalizePath(path)
 
-  if (p === '/' || p === ONBOARD_PATH) {
+  if (p === '/') {
+    return { screen: 'landing', artistSlug: 'miguel' }
+  }
+
+  if (p === ONBOARD_PATH) {
     return { screen: 'onboard', artistSlug: 'miguel' }
   }
 
@@ -72,7 +77,7 @@ function parseRoute(path = window.location.pathname): {
     return { screen: 'chat', artistSlug: slugMatch[1] }
   }
 
-  return { screen: 'onboard', artistSlug: 'miguel' }
+  return { screen: 'landing', artistSlug: 'miguel' }
 }
 
 function App() {
@@ -83,13 +88,6 @@ function App() {
   const [artist, setArtist] = useState<ArtistProfile | null>(null)
   const [artistError, setArtistError] = useState('')
   const [estimate, setEstimate] = useState<Estimate | null>(null)
-
-  useEffect(() => {
-    const route = parseRoute()
-    if (window.location.pathname === '/' && route.screen === 'onboard') {
-      window.history.replaceState(null, '', ONBOARD_PATH)
-    }
-  }, [])
 
   useEffect(() => {
     const onPopState = () => {
@@ -156,6 +154,7 @@ function App() {
 
   return (
     <>
+      {screen === 'landing' && <LandingPage />}
       {screen === 'onboard' && <ArtistOnboarding />}
       {screen === 'chat' && (
         artistError ? (

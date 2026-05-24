@@ -24,6 +24,47 @@ from db.models import Artist
 
 router = APIRouter(prefix="/api/artists", tags=["artist-onboard"])
 
+
+def _artist_bio(artist: Artist) -> str | None:
+    if artist.bio and artist.bio.strip():
+        return artist.bio.strip()
+    if artist.bio_short and artist.bio_short.strip():
+        return artist.bio_short.strip()
+    return None
+
+
+def _artist_specialties(artist: Artist) -> list[str]:
+    if artist.specialties:
+        return list(artist.specialties)
+    return []
+
+
+@router.get("")
+async def list_active_artists(db: AsyncSession = Depends(get_db)):
+    """Public list of active artists for the landing page."""
+    result = await db.execute(
+        select(Artist)
+        .where(Artist.status == "active")
+        .order_by(Artist.name)
+    )
+    artists = result.scalars().all()
+    return {
+        "artists": [
+            {
+                "id": str(artist.id),
+                "name": artist.name,
+                "slug": artist.slug,
+                "city": artist.city,
+                "state": artist.state,
+                "instagram_handle": artist.instagram_handle,
+                "specialties": _artist_specialties(artist),
+                "bio": _artist_bio(artist),
+            }
+            for artist in artists
+        ]
+    }
+
+
 PRICING_API_TO_DB = {
     "small_piece": "small",
     "half_day": "half_day",
