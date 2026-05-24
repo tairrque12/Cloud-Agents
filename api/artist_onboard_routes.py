@@ -1,5 +1,6 @@
 # api/artist_onboard_routes.py
 # New-artist application onboarding only — does not modify Miguel's /api/miguel/* flow.
+# Public artist directory: GET /api/artists (active artists for landing page).
 
 import logging
 import re
