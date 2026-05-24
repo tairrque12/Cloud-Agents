@@ -4,6 +4,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
   type FocusEvent,
+  type FormEvent,
   type ReactNode,
 } from 'react'
 import {
@@ -13,7 +14,8 @@ import {
   SPECIALTY_OPTIONS,
   type ApiPricingConfig,
 } from '../types/artist'
-import { createArtistPath } from '../config'
+
+const NETLIFY_FORM_NAME = 'artist-onboarding'
 
 type Step =
   | 'identity'
@@ -75,9 +77,13 @@ const US_STATES = [
   'DC',
 ]
 
-interface CreateArtistResponse {
-  id: string
-  slug: string
+function buildNetlifyFormBody(fields: Record<string, string>): string {
+  const params = new URLSearchParams()
+  params.set('form-name', NETLIFY_FORM_NAME)
+  for (const [key, value] of Object.entries(fields)) {
+    params.set(key, value)
+  }
+  return params.toString()
 }
 
 export default function ArtistOnboarding() {
@@ -223,52 +229,56 @@ export default function ArtistOnboarding() {
       return
     }
 
+    if (import.meta.env.DEV) {
+      setError(
+        'Applications submit through Netlify Forms on the deployed site. Open your Netlify URL or production domain to test submission.'
+      )
+      return
+    }
+
     setSubmitting(true)
     setError('')
     try {
-      const res = await fetch(createArtistPath(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          profile_photo_url: profilePhotoUrl || undefined,
-          studio_name: studioName.trim() || undefined,
-          city: city.trim(),
-          state,
-          bio: bio.trim(),
-          specialties: specialties.map((s) => s.toLowerCase()),
-          pricing_tiers: pricing,
-          phone_number: phoneNumber.trim(),
-          scheduling_tool: schedulingTool,
-          scheduling_tool_other:
-            schedulingTool === 'Other' ? schedulingToolOther.trim() : undefined,
-          email: email.trim(),
-          instagram_handle: instagramHandle.trim() || undefined,
-          notes: notes.trim() || undefined,
-        }),
+      const body = buildNetlifyFormBody({
+        name: name.trim(),
+        profile_photo_url: profilePhotoUrl ?? '',
+        studio_name: studioName.trim(),
+        city: city.trim(),
+        state,
+        bio: bio.trim(),
+        specialties: specialties.map((s) => s.toLowerCase()).join(', '),
+        pricing_json: JSON.stringify(pricing),
+        phone_number: phoneNumber.trim(),
+        scheduling_tool: schedulingTool,
+        scheduling_tool_other:
+          schedulingTool === 'Other' ? schedulingToolOther.trim() : '',
+        email: email.trim(),
+        instagram_handle: instagramHandle.trim(),
+        notes: notes.trim(),
       })
-      const data = await res.json().catch(() => ({}))
+
+      const res = await fetch('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+
       if (!res.ok) {
-        const fallback =
-          res.status === 404
-            ? 'Application server not found. Start the backend locally (port 8000) or deploy the latest API.'
-            : 'Could not submit your application. Please try again.'
-        throw new Error(
-          typeof data.detail === 'string' ? data.detail : fallback
-        )
+        throw new Error('Could not submit your application. Please try again.')
       }
-      void (data as CreateArtistResponse)
+
       setStep('success')
     } catch (err) {
-      if (err instanceof TypeError) {
-        setError(
-          'Could not reach the application server. If you are testing locally, run the API on port 8000 (uvicorn api.main:app --reload --port 8000) and the frontend from frontend/ (npm run dev). Otherwise wait a minute and try again — the live database may still be updating.'
-        )
-      } else {
-        setError(err instanceof Error ? err.message : 'Something went wrong.')
-      }
+      setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleFormSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    if (step === 'review') {
+      void handleSubmit()
     }
   }
 
@@ -311,6 +321,15 @@ export default function ArtistOnboarding() {
 
   return (
     <PageShell>
+      <form
+        name={NETLIFY_FORM_NAME}
+        method="POST"
+        data-netlify="true"
+        netlify=""
+        onSubmit={handleFormSubmit}
+        style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}
+      >
+        <input type="hidden" name="form-name" value={NETLIFY_FORM_NAME} />
       <header style={{ width: '100%', maxWidth: 640, marginBottom: 32 }}>
         <p style={{ color: 'var(--gold)', letterSpacing: '0.2em', fontSize: 11, marginBottom: 12 }}>
           INKBOOK FOR ARTISTS
@@ -634,6 +653,7 @@ export default function ArtistOnboarding() {
           </div>
         </FormSection>
       )}
+      </form>
     </PageShell>
   )
 }

@@ -29,6 +29,23 @@
     <title>Inkbook · Booking with Miguel</title>
   </head>
   <body>
+    <!-- Netlify Forms: static registration for client-rendered artist onboarding -->
+    <form name="artist-onboarding" method="POST" data-netlify="true" netlify hidden>
+      <input type="text" name="name" />
+      <input type="text" name="profile_photo_url" />
+      <input type="text" name="studio_name" />
+      <input type="text" name="city" />
+      <input type="text" name="state" />
+      <textarea name="bio"></textarea>
+      <input type="text" name="specialties" />
+      <input type="text" name="pricing_json" />
+      <input type="text" name="phone_number" />
+      <input type="text" name="scheduling_tool" />
+      <input type="text" name="scheduling_tool_other" />
+      <input type="email" name="email" />
+      <input type="text" name="instagram_handle" />
+      <textarea name="notes"></textarea>
+    </form>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
 
