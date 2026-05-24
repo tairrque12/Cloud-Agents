@@ -53,6 +53,21 @@ from tools.telegram_notifier import (
 )
 from db.database import get_db
 from db.models import Artist, Client, Intake, Estimate, Approval, BetaApplication
+from api.artist_onboard_routes import router as artist_onboard_router, fetch_artist_config
+from api.artist_helpers import (
+    allocate_unique_slug,
+    artist_public_profile,
+    generate_admin_secret,
+    generate_referral_code,
+    get_artist_by_slug,
+    get_miguel,
+    get_pricing_tiers,
+    normalize_pricing_config,
+    normalize_slug,
+    resolve_artist,
+    slug_from_name,
+    validate_slug,
+)
 
 app = FastAPI(
     title="Inkbook API",
@@ -67,6 +82,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(artist_onboard_router)
 
 # ─────────────────────────────────────────
 # SENTINEL VALUES
@@ -166,6 +183,24 @@ class BetaApplicationRequest(BaseModel):
     instagram: str
     email: str
 
+
+class ArtistOnboardRequest(BaseModel):
+    name: str
+    email: str
+    city: str
+    slug: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    phone: Optional[str] = None
+    state: Optional[str] = None
+    studio_name: Optional[str] = None
+    bio_short: Optional[str] = None
+    specialties: Optional[List[str]] = []
+    telegram_chat_id: Optional[str] = None
+    booking_min_days: int = 14
+    booking_max_days: int = 60
+    pricing: Optional[dict] = None
+    plan: str = "starter"
+
 # ─────────────────────────────────────────
 # IN-MEMORY STORE
 # ─────────────────────────────────────────
@@ -198,8 +233,10 @@ def resolve_reference_images(request: IntakeRequest) -> list:
 def extract_pricing(
     pricing_agent_output: str,
     size_selection: str,
-    placement: str = ""
+    placement: str = "",
+    pricing_tiers: dict | None = None,
 ) -> dict:
+    tiers = pricing_tiers or PRICING_TIERS
     text = pricing_agent_output.lower()
     placement_lower = (placement or "").lower()
 
@@ -230,7 +267,7 @@ def extract_pricing(
         }
         session_type = size_to_tier.get(size_selection, "small")
 
-    tier = PRICING_TIERS[session_type]
+    tier = tiers[session_type]
     print(f">>> Pricing: session_type={session_type}, "
           f"min={tier['min']}, max={tier['max']}, deposit={tier['deposit']}")
 
@@ -270,14 +307,6 @@ async def get_or_create_client(db: AsyncSession, name: str, contact: str) -> Cli
     db.add(client)
     await db.flush()
     return client
-
-
-async def get_miguel(db: AsyncSession) -> Artist:
-    result = await db.execute(select(Artist).where(Artist.name == "Miguel"))
-    artist = result.scalar_one_or_none()
-    if not artist:
-        raise HTTPException(status_code=500, detail="Artist record not found.")
-    return artist
 
 
 async def store_intake(
@@ -392,7 +421,8 @@ async def reconstruct_intake_from_db(
             "full_sleeve": "full_sleeve",
         }
         session_type = size_to_tier.get(intake_record.size_selection or "medium", "half_day")
-        tier = PRICING_TIERS.get(session_type, PRICING_TIERS["half_day"])
+        artist_tiers = get_pricing_tiers(artist) if artist else PRICING_TIERS
+        tier = artist_tiers.get(session_type, artist_tiers["half_day"])
 
         reconstructed = {
             "client_name": client.name if client else "Unknown",
@@ -469,9 +499,104 @@ def health_check():
     return {
         "status": "running",
         "product": "Inkbook",
-        "artist": "Miguel",
-        "version": "0.1.0"
+        "multi_artist": True,
+        "version": "0.2.0"
     }
+
+
+@app.get("/api/artists/check-slug/{slug}")
+async def check_artist_slug(slug: str, db: AsyncSession = Depends(get_db)):
+    normalized = normalize_slug(slug)
+    try:
+        validate_slug(normalized)
+    except HTTPException as exc:
+        return {"available": False, "slug": normalized, "reason": exc.detail}
+
+    result = await db.execute(select(Artist).where(Artist.slug == normalized))
+    taken = result.scalar_one_or_none() is not None
+    return {"available": not taken, "slug": normalized}
+
+
+@app.get("/api/artists/{slug}")
+async def get_artist_profile(slug: str, db: AsyncSession = Depends(get_db)):
+    return await fetch_artist_config(slug, db)
+
+
+@app.post("/api/artists/onboard")
+async def onboard_artist(
+    request: ArtistOnboardRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        email = request.email.strip().lower()
+        base_slug = request.slug.strip() if request.slug else slug_from_name(request.name)
+        slug = await allocate_unique_slug(db, base_slug)
+
+        instagram = None
+        if request.instagram_handle and request.instagram_handle.strip():
+            instagram = request.instagram_handle.strip().lstrip("@")
+
+        existing_email = await db.execute(select(Artist).where(Artist.email == email))
+        if existing_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+        pricing_config = normalize_pricing_config(request.pricing)
+        admin_secret = generate_admin_secret()
+        referral_code = generate_referral_code(request.name)
+
+        bio = (request.bio_short or "").strip()
+        if not bio and request.specialties:
+            specialty_text = ", ".join(request.specialties[:3])
+            location = request.city
+            if request.state:
+                location = f"{request.city}, {request.state}"
+            bio = f"Tattoo artist in {location} — {specialty_text}."
+        elif not bio:
+            location = request.city
+            if request.state:
+                location = f"{request.city}, {request.state}"
+            bio = f"Tattoo artist based in {location}."
+
+        from datetime import datetime, timezone
+        artist = Artist(
+            slug=slug,
+            name=request.name.strip(),
+            email=email,
+            phone=request.phone,
+            instagram_handle=instagram,
+            city=request.city.strip(),
+            state=(request.state or "").strip() or None,
+            studio_name=(request.studio_name or "").strip() or None,
+            bio_short=bio,
+            specialties=request.specialties or [],
+            pricing_config=pricing_config,
+            admin_secret=admin_secret,
+            status="active",
+            plan=request.plan if request.plan in ("starter", "pro", "elite") else "starter",
+            telegram_chat_id=(request.telegram_chat_id or "").strip() or None,
+            referral_code=referral_code,
+            booking_min_days=max(1, request.booking_min_days),
+            booking_max_days=max(request.booking_min_days + 1, request.booking_max_days),
+            onboarded_at=datetime.now(timezone.utc),
+        )
+        db.add(artist)
+        await db.commit()
+        await db.refresh(artist)
+
+        print(f">>> Onboarded artist: {artist.name} · slug={artist.slug}")
+
+        return {
+            "status": "success",
+            "artist": artist_public_profile(artist),
+            "admin_url": f"/admin/{artist.slug}/{artist.admin_secret}",
+            "booking_url": f"/book/{artist.slug}",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Onboarding failed: {str(e)}")
 
 
 @app.post("/api/beta/apply")
@@ -500,101 +625,124 @@ async def beta_apply(
         )
 
 
+async def fetch_intakes_payload(db: AsyncSession, artist_id: uuid.UUID | None = None) -> list:
+    query = (
+        select(Intake)
+        .options(
+            selectinload(Intake.client),
+            selectinload(Intake.approval),
+            selectinload(Intake.estimate),
+        )
+        .order_by(desc(Intake.created_at))
+        .limit(100)
+    )
+    if artist_id is not None:
+        query = query.where(Intake.artist_id == artist_id)
+
+    result = await db.execute(query)
+    intakes = result.scalars().all()
+
+    output = []
+    for intake in intakes:
+        client = intake.client
+        approval = intake.approval
+        estimate = intake.estimate
+
+        selected_date = None
+        if intake.short_id in intake_store:
+            selected_date = intake_store[intake.short_id].get("selected_date")
+        if selected_date is None:
+            selected_date = intake.selected_date
+
+        client_message = ""
+        session_summary = ""
+        coverage = ""
+        image_count = 0
+        if intake.short_id in intake_store:
+            mem = intake_store[intake.short_id]
+            client_message = mem.get("client_message", "")
+            session_summary = mem.get("session_summary", "")
+            coverage = mem.get("coverage", "")
+            image_count = mem.get("image_count", 0)
+        elif intake.raw_crew_output:
+            if "---SESSION SUMMARY---" in intake.raw_crew_output:
+                parts = intake.raw_crew_output.split("---SESSION SUMMARY---")
+                client_message = parts[0].replace("---CLIENT MESSAGE---", "").strip()
+                session_summary = parts[1].strip()
+            else:
+                client_message = intake.raw_crew_output.strip()
+
+        status = intake.status
+        if approval:
+            status = approval.decision
+
+        price_min = 0
+        price_max = 0
+        deposit = 0
+        session_type = intake.size_selection or ""
+        if estimate:
+            price_min = float(estimate.price_min or 0)
+            price_max = float(estimate.price_max or 0)
+            deposit = float(estimate.deposit_amount or 0)
+            session_type = estimate.session_type or session_type
+        elif intake.short_id in intake_store:
+            pricing = intake_store[intake.short_id].get("pricing", {})
+            price_min = pricing.get("price_min", 0)
+            price_max = pricing.get("price_max", 0)
+            deposit = pricing.get("deposit", 0)
+            session_type = pricing.get("session_type", session_type)
+
+        output.append({
+            "intake_id": intake.short_id,
+            "created_at": intake.created_at.isoformat() if intake.created_at else None,
+            "client_name": client.name if client else "Unknown",
+            "client_contact": client.contact if client else "",
+            "placement": intake.placement or "",
+            "coverage": coverage,
+            "description": intake.description or "",
+            "styles": intake.styles or [],
+            "is_cover_up": intake.is_cover_up,
+            "budget_range": intake.budget_range or "",
+            "preferred_timing": intake.preferred_timing or "",
+            "selected_date": selected_date,
+            "status": status,
+            "classification": intake.classification or "",
+            "price_min": price_min,
+            "price_max": price_max,
+            "deposit": deposit,
+            "session_type": session_type,
+            "client_message": client_message,
+            "session_summary": session_summary,
+            "image_count": image_count,
+        })
+
+    return output
+
+
+@app.get("/api/artists/{slug}/intakes")
+async def get_artist_intakes(slug: str, db: AsyncSession = Depends(get_db)):
+    try:
+        artist = await resolve_artist(db, slug)
+        intakes = await fetch_intakes_payload(db, artist.id)
+        return {"intakes": intakes, "artist": artist_public_profile(artist)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to load intakes: {str(e)}")
+
+
 @app.get("/api/miguel/intakes")
 async def get_intakes(db: AsyncSession = Depends(get_db)):
     """
-    Returns all intakes from PostgreSQL for the admin dashboard.
-    Persistent across Render restarts.
+    Returns Miguel's intakes for the admin dashboard (legacy route).
     """
     try:
-        result = await db.execute(
-            select(Intake)
-            .options(
-                selectinload(Intake.client),
-                selectinload(Intake.approval),
-                selectinload(Intake.estimate),
-            )
-            .order_by(desc(Intake.created_at))
-            .limit(100)
-        )
-        intakes = result.scalars().all()
-
-        output = []
-        for intake in intakes:
-            client = intake.client
-            approval = intake.approval
-            estimate = intake.estimate
-
-            selected_date = None
-            if intake.short_id in intake_store:
-                selected_date = intake_store[intake.short_id].get("selected_date")
-            if selected_date is None:
-                selected_date = intake.selected_date
-
-            client_message = ""
-            session_summary = ""
-            coverage = ""
-            image_count = 0
-            if intake.short_id in intake_store:
-                mem = intake_store[intake.short_id]
-                client_message = mem.get("client_message", "")
-                session_summary = mem.get("session_summary", "")
-                coverage = mem.get("coverage", "")
-                image_count = mem.get("image_count", 0)
-            elif intake.raw_crew_output:
-                if "---SESSION SUMMARY---" in intake.raw_crew_output:
-                    parts = intake.raw_crew_output.split("---SESSION SUMMARY---")
-                    client_message = parts[0].replace("---CLIENT MESSAGE---", "").strip()
-                    session_summary = parts[1].strip()
-                else:
-                    client_message = intake.raw_crew_output.strip()
-
-            status = intake.status
-            if approval:
-                status = approval.decision
-
-            price_min = 0
-            price_max = 0
-            deposit = 0
-            session_type = intake.size_selection or ""
-            if estimate:
-                price_min = float(estimate.price_min or 0)
-                price_max = float(estimate.price_max or 0)
-                deposit = float(estimate.deposit_amount or 0)
-                session_type = estimate.session_type or session_type
-            elif intake.short_id in intake_store:
-                pricing = intake_store[intake.short_id].get("pricing", {})
-                price_min = pricing.get("price_min", 0)
-                price_max = pricing.get("price_max", 0)
-                deposit = pricing.get("deposit", 0)
-                session_type = pricing.get("session_type", session_type)
-
-            output.append({
-                "intake_id": intake.short_id,
-                "created_at": intake.created_at.isoformat() if intake.created_at else None,
-                "client_name": client.name if client else "Unknown",
-                "client_contact": client.contact if client else "",
-                "placement": intake.placement or "",
-                "coverage": coverage,
-                "description": intake.description or "",
-                "styles": intake.styles or [],
-                "is_cover_up": intake.is_cover_up,
-                "budget_range": intake.budget_range or "",
-                "preferred_timing": intake.preferred_timing or "",
-                "selected_date": selected_date,
-                "status": status,
-                "classification": intake.classification or "",
-                "price_min": price_min,
-                "price_max": price_max,
-                "deposit": deposit,
-                "session_type": session_type,
-                "client_message": client_message,
-                "session_summary": session_summary,
-                "image_count": image_count,
-            })
-
-        return {"intakes": output}
-
+        artist = await get_miguel(db)
+        intakes = await fetch_intakes_payload(db, artist.id)
+        return {"intakes": intakes}
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         print(f">>> DB query failed, falling back to memory store: {e}")
@@ -626,10 +774,10 @@ async def get_intakes(db: AsyncSession = Depends(get_db)):
         return {"intakes": list(reversed(result))}
 
 
-@app.post("/api/miguel/intake")
-async def intake(
+async def process_intake_request(
     request: IntakeRequest,
-    db: AsyncSession = Depends(get_db)
+    artist: Artist,
+    db: AsyncSession,
 ):
     try:
         budget_db = BUDGET_MAP.get(request.budget_range, "under_200")
@@ -681,12 +829,14 @@ async def intake(
         print(f">>> Classification: {classification}")
 
         client_message, session_summary = parse_crew_output(result)
-        pricing = extract_pricing(result, size_db, request.placement)
+        pricing_tiers = get_pricing_tiers(artist)
+        pricing = extract_pricing(
+            result, size_db, request.placement, pricing_tiers=pricing_tiers
+        )
 
         print(f">>> Pricing: ${pricing['price_min']}-${pricing['price_max']}, "
               f"deposit ${pricing['deposit']}, type {pricing['session_type']}")
 
-        artist = await get_miguel(db)
         client = await get_or_create_client(
             db=db,
             name=request.client_name,
@@ -753,17 +903,35 @@ async def intake(
         raise HTTPException(status_code=500, detail=f"Intake failed: {str(e)}")
 
 
-@app.post("/api/miguel/confirm-date")
-async def confirm_date(
-    request: DateConfirmRequest,
-    background_tasks: BackgroundTasks,
+@app.post("/api/artists/{slug}/intake")
+async def artist_intake(
+    slug: str,
+    request: IntakeRequest,
     db: AsyncSession = Depends(get_db)
+):
+    artist = await resolve_artist(db, slug)
+    return await process_intake_request(request, artist, db)
+
+
+@app.post("/api/miguel/intake")
+async def intake(
+    request: IntakeRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    artist = await get_miguel(db)
+    return await process_intake_request(request, artist, db)
+
+
+async def process_confirm_date(
+    request: DateConfirmRequest,
+    artist: Artist,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
 ):
     try:
         short_id = request.intake_id
         selected_date = request.selected_date
 
-        # Try memory first, fall back to DB if not found
         if short_id not in intake_store:
             print(f">>> {short_id} not in memory — checking DB...")
             reconstructed = await reconstruct_intake_from_db(short_id, db)
@@ -811,7 +979,7 @@ async def confirm_date(
 
         return {
             "status": "success",
-            "message": "Request sent to Miguel",
+            "message": f"Request sent to {artist.name}",
             "intake_id": short_id,
             "selected_date": selected_date,
             "needs_alternate": selected_date == NEEDS_ALTERNATE_DATES
@@ -824,15 +992,32 @@ async def confirm_date(
         raise HTTPException(status_code=500, detail=f"Date confirmation failed: {str(e)}")
 
 
-@app.post("/api/miguel/approve")
-async def approve(
-    request: ApprovalRequest,
+@app.post("/api/artists/{slug}/confirm-date")
+async def artist_confirm_date(
+    slug: str,
+    request: DateConfirmRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Called by the admin dashboard when Miguel taps Approve or Decline.
-    Writes the decision to the approvals table and updates intake status.
-    """
+    artist = await resolve_artist(db, slug)
+    return await process_confirm_date(request, artist, background_tasks, db)
+
+
+@app.post("/api/miguel/confirm-date")
+async def confirm_date(
+    request: DateConfirmRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    artist = await get_miguel(db)
+    return await process_confirm_date(request, artist, background_tasks, db)
+
+
+async def process_approve(
+    request: ApprovalRequest,
+    artist: Artist,
+    db: AsyncSession,
+):
     try:
         short_id = request.intake_id
 
@@ -847,7 +1032,8 @@ async def approve(
         if not intake_record:
             raise HTTPException(status_code=404, detail="Intake not found.")
 
-        artist = await get_miguel(db)
+        if intake_record.artist_id != artist.id:
+            raise HTTPException(status_code=403, detail="Intake does not belong to this artist.")
 
         client_message = ""
         if short_id in intake_store:
@@ -902,6 +1088,26 @@ async def approve(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Approval failed: {str(e)}")
+
+
+@app.post("/api/artists/{slug}/approve")
+async def artist_approve(
+    slug: str,
+    request: ApprovalRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    artist = await resolve_artist(db, slug)
+    return await process_approve(request, artist, db)
+
+
+@app.post("/api/miguel/approve")
+async def approve(
+    request: ApprovalRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Called by the admin dashboard when an artist approves or declines."""
+    artist = await get_miguel(db)
+    return await process_approve(request, artist, db)
 
 
 @app.post("/api/telegram/webhook")

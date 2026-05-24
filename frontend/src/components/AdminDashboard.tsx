@@ -9,10 +9,15 @@
 // Designed to be installable as a PWA shortcut on his home screen.
 
 import { useState, useEffect } from 'react'
+import { artistApiPath } from '../config'
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'inkbook2024'
 const STORAGE_KEY = 'inkbook_admin_auth'
-const API_BASE = 'https://inkbook-4tlr.onrender.com'
+
+interface Props {
+  artistSlug?: string
+  adminSecret?: string
+}
 
 interface Intake {
   intake_id: string
@@ -68,7 +73,15 @@ function ClassIcon({ classification }: { classification: string }) {
 }
 
 // ─── INTAKE CARD ──────────────────────────────────────────────────
-function IntakeCard({ intake, onAction }: { intake: Intake; onAction: () => void }) {
+function IntakeCard({
+  intake,
+  artistSlug,
+  onAction,
+}: {
+  intake: Intake
+  artistSlug: string
+  onAction: () => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const [acting, setActing] = useState(false)
 
@@ -76,7 +89,7 @@ function IntakeCard({ intake, onAction }: { intake: Intake; onAction: () => void
     if (acting) return
     setActing(true)
     try {
-      await fetch(`${API_BASE}/api/miguel/approve`, {
+      await fetch(artistApiPath(artistSlug, 'approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intake_id: intake.intake_id, decision }),
@@ -325,22 +338,24 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
 }
 
 // ─── MAIN DASHBOARD ───────────────────────────────────────────────
-export default function AdminDashboard() {
+export default function AdminDashboard({ artistSlug = 'miguel', adminSecret }: Props) {
   const [authed, setAuthed] = useState(() => {
+    if (adminSecret) return true
     return localStorage.getItem(STORAGE_KEY) === 'true'
   })
   const [intakes, setIntakes] = useState<Intake[]>([])
+  const [artistName, setArtistName] = useState('')
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'declined'>('pending')
 
   const fetchIntakes = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/miguel/intakes`)
+      const res = await fetch(artistApiPath(artistSlug, 'intakes'))
       const data = await res.json()
       setIntakes(data.intakes ?? [])
+      setArtistName(data.artist?.name ?? artistSlug)
     } catch {
-      // Backend endpoint doesn't exist yet — show empty state
       setIntakes([])
     } finally {
       setLoading(false)
@@ -351,7 +366,7 @@ export default function AdminDashboard() {
     if (!authed) return
     const id = setTimeout(fetchIntakes, 0)
     return () => clearTimeout(id)
-  }, [authed])
+  }, [authed, artistSlug])
 
   if (!authed) {
     return <PasswordGate onUnlock={() => setAuthed(true)} />
@@ -392,7 +407,7 @@ export default function AdminDashboard() {
             <p style={{
               color: 'var(--gold)', fontSize: '10px',
               letterSpacing: '0.2em', textTransform: 'uppercase',
-            }}>Artist Dashboard</p>
+            }}>{artistName ? `${artistName}'s Dashboard` : 'Artist Dashboard'}</p>
           </div>
           <button
             onClick={fetchIntakes}
@@ -470,6 +485,7 @@ export default function AdminDashboard() {
           <IntakeCard
             key={intake.intake_id}
             intake={intake}
+            artistSlug={artistSlug}
             onAction={fetchIntakes}
           />
         ))}

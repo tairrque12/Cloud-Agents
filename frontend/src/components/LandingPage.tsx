@@ -3,10 +3,11 @@
 
 import { useState, type CSSProperties, type FocusEvent } from 'react'
 
-const API_BASE = 'https://inkbook-4tlr.onrender.com'
+import { API_BASE } from '../config'
 
 interface Props {
   onStart: () => void
+  onArtistSignup: () => void
 }
 
 const STATS = [
@@ -15,7 +16,7 @@ const STATS = [
   { value: '100%', lines: ['You control', 'every booking'] },
 ]
 
-export default function LandingPage({ onStart }: Props) {
+export default function LandingPage({ onStart, onArtistSignup }: Props) {
   const [name, setName] = useState('')
   const [instagram, setInstagram] = useState('')
   const [email, setEmail] = useState('')
@@ -188,6 +189,33 @@ export default function LandingPage({ onStart }: Props) {
           Inkbook handles your client intake — pricing,
           scheduling, and quotes — so the only decision
           left is yours. Review. Approve. Get back to the art.
+        </p>
+
+        <button
+          type="button"
+          onClick={onArtistSignup}
+          style={{
+            padding: '16px 28px',
+            background: 'var(--gold)',
+            color: 'var(--black)',
+            borderRadius: '2px',
+            fontSize: '14px',
+            fontWeight: 500,
+            letterSpacing: '0.04em',
+            marginBottom: '20px',
+          }}
+        >
+          Set up your booking page →
+        </button>
+
+        <p style={{
+          fontSize: '13px',
+          color: 'var(--text-muted)',
+          marginBottom: '48px',
+          maxWidth: '360px',
+          lineHeight: 1.6,
+        }}>
+          Already approved or ready to go live? Onboard in about 5 minutes. Or apply below for founding access.
         </p>
 
         {/* Form */}

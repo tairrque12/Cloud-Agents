@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import LandingPage from './components/LandingPage'
 import ChatWindow from './components/ChatWindow'
 import EstimateCard from './components/EstimateCard'
 import AdminDashboard from './components/AdminDashboard'
+import ArtistOnboarding from './components/ArtistOnboarding'
+import { MIGUEL_FALLBACK, type ArtistProfile } from './types/artist'
+import { artistProfilePath } from './config'
 
-export type Screen = 'landing' | 'chat' | 'estimate' | 'admin'
+export type Screen = 'chat' | 'estimate' | 'admin' | 'onboard'
 
 export interface Estimate {
   priceMin: number
@@ -16,70 +18,188 @@ export interface Estimate {
   summary: string
 }
 
-const ADMIN_PATH = '/admin-inkbook-m1g'
-/** Client booking — use this URL in artist bio links (e.g. Miguel's Instagram) */
-const BOOK_PATH = '/book'
+const LEGACY_ADMIN_PATH = '/admin-inkbook-m1g'
+const LEGACY_BOOK_PATH = '/book'
+const ONBOARD_PATH = '/onboard'
+
+const RESERVED_SLUGS = new Set([
+  'onboard',
+  'book',
+  'miguel',
+  'admin',
+  'admin-inkbook-m1g',
+  'beta',
+  'api',
+])
+
 function normalizePath(path: string): string {
   const base = path.split('?')[0].split('#')[0]
   if (base.length > 1 && base.endsWith('/')) return base.slice(0, -1)
   return base || '/'
 }
 
-function isClientBookingPath(path = window.location.pathname): boolean {
+function parseRoute(path = window.location.pathname): {
+  screen: Screen
+  artistSlug: string
+  adminSecret?: string
+} {
   const p = normalizePath(path)
-  return p === BOOK_PATH || p === '/miguel'
-}
 
-function screenFromPath(path = window.location.pathname): Screen {
-  const p = normalizePath(path)
-  if (p === ADMIN_PATH) return 'admin'
-  if (isClientBookingPath(p)) return 'chat'
-  return 'landing'
+  if (p === '/' || p === ONBOARD_PATH) {
+    return { screen: 'onboard', artistSlug: 'miguel' }
+  }
+
+  if (p === LEGACY_ADMIN_PATH) {
+    return { screen: 'admin', artistSlug: 'miguel' }
+  }
+
+  const adminMatch = p.match(/^\/admin\/([^/]+)\/([^/]+)$/)
+  if (adminMatch) {
+    return { screen: 'admin', artistSlug: adminMatch[1], adminSecret: adminMatch[2] }
+  }
+
+  const bookMatch = p.match(/^\/book\/([^/]+)$/)
+  if (bookMatch) {
+    return { screen: 'chat', artistSlug: bookMatch[1] }
+  }
+
+  if (p === LEGACY_BOOK_PATH || p === '/miguel') {
+    return { screen: 'chat', artistSlug: 'miguel' }
+  }
+
+  const slugMatch = p.match(/^\/([^/]+)$/)
+  if (slugMatch && !RESERVED_SLUGS.has(slugMatch[1])) {
+    return { screen: 'chat', artistSlug: slugMatch[1] }
+  }
+
+  return { screen: 'onboard', artistSlug: 'miguel' }
 }
 
 function App() {
-  const [screen, setScreen] = useState<Screen>(() => screenFromPath())
+  const initialRoute = parseRoute()
+  const [screen, setScreen] = useState<Screen>(initialRoute.screen)
+  const [artistSlug, setArtistSlug] = useState(initialRoute.artistSlug)
+  const [adminSecret, setAdminSecret] = useState(initialRoute.adminSecret)
+  const [artist, setArtist] = useState<ArtistProfile | null>(null)
+  const [artistError, setArtistError] = useState('')
   const [estimate, setEstimate] = useState<Estimate | null>(null)
 
-  // Re-sync when user navigates with back/forward
   useEffect(() => {
-    const onPopState = () => setScreen(screenFromPath())
+    const route = parseRoute()
+    if (window.location.pathname === '/' && route.screen === 'onboard') {
+      window.history.replaceState(null, '', ONBOARD_PATH)
+    }
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      const route = parseRoute()
+      setScreen(route.screen)
+      setArtistSlug(route.artistSlug)
+      setAdminSecret(route.adminSecret)
+    }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
-  const openClientBooking = () => {
-    window.history.replaceState(null, '', BOOK_PATH)
-    setScreen('chat')
-  }
+  useEffect(() => {
+    if (screen !== 'chat' && screen !== 'estimate') return
+
+    let cancelled = false
+    const isLegacyMiguel = artistSlug === 'miguel'
+    setArtistError('')
+    if (isLegacyMiguel) {
+      setArtist(MIGUEL_FALLBACK)
+    } else {
+      setArtist(null)
+    }
+
+    fetch(artistProfilePath(artistSlug))
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(
+            typeof data.detail === 'string' ? data.detail : 'Artist not found'
+          )
+        }
+        return res.json() as Promise<ArtistProfile>
+      })
+      .then((profile) => {
+        if (!cancelled) setArtist(profile)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          if (isLegacyMiguel) {
+            setArtist(MIGUEL_FALLBACK)
+            setArtistError('')
+          } else {
+            setArtist(null)
+            setArtistError(
+              err instanceof Error ? err.message : 'Artist not found'
+            )
+          }
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [artistSlug, screen])
 
   const resetAfterEstimate = () => {
-    setScreen(isClientBookingPath() ? 'chat' : 'landing')
+    const route = parseRoute()
+    setScreen(route.screen === 'chat' ? 'chat' : 'onboard')
   }
+
+  const notFoundMessage =
+    artistSlug === 'miguel' ? artistError : "This page doesn't exist"
 
   return (
     <>
-      {screen === 'landing' && (
-        <LandingPage onStart={openClientBooking} />
-      )}
+      {screen === 'onboard' && <ArtistOnboarding />}
       {screen === 'chat' && (
-        <ChatWindow
-          onComplete={(est) => {
-            setEstimate(est)
-            setScreen('estimate')
-          }}
-        />
+        artistError ? (
+          <LoadingState message={notFoundMessage} error />
+        ) : (
+          <ChatWindow
+            artist={artist ?? (artistSlug === 'miguel' ? MIGUEL_FALLBACK : null)}
+            artistSlug={artistSlug}
+            onComplete={(est) => {
+              setEstimate(est)
+              setScreen('estimate')
+            }}
+          />
+        )
       )}
-      {screen === 'estimate' && estimate && (
+      {screen === 'estimate' && estimate && (artist ?? (artistSlug === 'miguel' ? MIGUEL_FALLBACK : null)) && (
         <EstimateCard
+          artist={artist ?? MIGUEL_FALLBACK}
+          artistSlug={artistSlug}
           estimate={estimate}
           onReset={resetAfterEstimate}
         />
       )}
       {screen === 'admin' && (
-        <AdminDashboard />
+        <AdminDashboard artistSlug={artistSlug} adminSecret={adminSecret} />
       )}
     </>
+  )
+}
+
+function LoadingState({ message, error = false }: { message: string; error?: boolean }) {
+  return (
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'var(--black)',
+      color: error ? '#e07070' : 'var(--text-muted)',
+      padding: 24,
+      textAlign: 'center',
+    }}>
+      {message}
+    </div>
   )
 }
 

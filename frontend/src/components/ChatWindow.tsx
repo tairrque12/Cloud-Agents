@@ -11,6 +11,8 @@
 
 import { useState, useRef, useEffect } from 'react'
 import type { Estimate } from '../App'
+import type { ArtistProfile } from '../types/artist'
+import { artistApiPath } from '../config'
 
 interface Message {
   role: 'assistant' | 'user'
@@ -24,7 +26,22 @@ interface Message {
 type ChipOption = string | { label: string; description: string }
 
 interface Props {
+  artist: ArtistProfile | null
+  artistSlug: string
   onComplete: (estimate: Estimate) => void
+}
+
+function buildIntro(artist: ArtistProfile | null): string {
+  if (!artist) {
+    return "Hey! Tell me what you're looking to get done."
+  }
+  const location = artist.location || artist.city || 'your area'
+  const bio = artist.bio_short || `tattoo artist based in ${location}.`
+  return `Hey! I'm ${artist.name} — ${bio} What are you looking to get done?`
+}
+
+function referencePrompt(artistName: string): string {
+  return `Upload up to 3 reference images. Photos help ${artistName} give a more accurate quote and prepare for your session.`
 }
 
 type Step =
@@ -169,11 +186,12 @@ const FALLBACK_PRICING: Record<string, { min: number; max: number }> = {
   full_sleeve: { min: 800, max: 1000 },
 }
 
-export default function ChatWindow({ onComplete }: Props) {
+export default function ChatWindow({ artist, artistSlug, onComplete }: Props) {
+  const artistName = artist?.name ?? 'your artist'
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: "Hey! I'm Miguel, tattoo artist based in Austin, TX — black and grey realism is my specialty. What are you looking to get done?",
+      content: buildIntro(artist),
     }
   ])
   const [step, setStep] = useState<Step>('description')
@@ -184,6 +202,14 @@ export default function ChatWindow({ onComplete }: Props) {
   const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    setMessages([{ role: 'assistant', content: buildIntro(artist) }])
+    setStep('description')
+    setAnswers({})
+    setReferenceImages([])
+    setUploadDone(false)
+  }, [artistSlug, artist?.slug])
 
   useEffect(() => {
     const t = setTimeout(
@@ -226,7 +252,7 @@ export default function ChatWindow({ onComplete }: Props) {
         submitToBackend(newAnswers)
       } else if (nextStep === 'reference') {
         setUploadDone(false)
-        const question = STEP_QUESTIONS.reference!
+        const question = referencePrompt(artistName)
         addAssistantMessage(question, {
           isUpload: true,
           stepKey: 'reference',
@@ -332,7 +358,7 @@ export default function ChatWindow({ onComplete }: Props) {
     const fallbackKey = sessionType === 'full_sleeve' ? 'full_sleeve' : sessionType
 
     try {
-      const res = await fetch('https://inkbook-4tlr.onrender.com/api/miguel/intake', {
+      const res = await fetch(artistApiPath(artistSlug, 'intake'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -381,7 +407,7 @@ export default function ChatWindow({ onComplete }: Props) {
         onComplete({
           priceMin, priceMax, estimatedDate, availableDates,
           intakeId, preferredTiming,
-          summary: message || 'Miguel will review your request and confirm shortly.',
+          summary: message || `${artistName} will review your request and confirm shortly.`,
         })
       }, 2800)
 
@@ -393,7 +419,7 @@ export default function ChatWindow({ onComplete }: Props) {
           estimatedDate: 'Thursday · May 28',
           availableDates: ['Thursday · May 28', 'Monday · June 1', 'Wednesday · June 3'],
           intakeId: '', preferredTiming: 'flexible',
-          summary: "Miguel will review your request and confirm shortly. You'll receive a message with next steps.",
+          summary: `${artistName} will review your request and confirm shortly. You'll receive a message with next steps.`,
         })
       }, 2800)
     } finally {
@@ -440,7 +466,7 @@ export default function ChatWindow({ onComplete }: Props) {
           <div style={{ fontSize: '14px', fontWeight: 500 }}>Inkbook Assistant</div>
           <div style={{ fontSize: '11px', color: 'var(--gold-dim)', display: 'flex', alignItems: 'center', gap: '5px' }}>
             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4CAF82', display: 'inline-block' }} />
-            Booking with Miguel · usually replies fast
+            Booking with {artistName} · usually replies fast
           </div>
         </div>
       </div>

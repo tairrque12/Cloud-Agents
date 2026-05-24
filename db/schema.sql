@@ -26,6 +26,7 @@ CREATE TABLE artists (
     updated_at          TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 
     -- Identity
+    slug                VARCHAR(50) UNIQUE NOT NULL,
     name                VARCHAR(100) NOT NULL,
     email               VARCHAR(255) UNIQUE NOT NULL,
     phone               VARCHAR(20),
@@ -35,6 +36,10 @@ CREATE TABLE artists (
     city                VARCHAR(100),
     state               VARCHAR(50),
     studio_name         VARCHAR(150),
+    bio_short           TEXT,
+    specialties         TEXT[],
+    pricing_config      JSONB,
+    admin_secret        VARCHAR(64),
 
     -- Platform status
     status              VARCHAR(20) DEFAULT 'active'
@@ -493,12 +498,17 @@ CREATE TRIGGER bookings_updated_at
 -- ============================================================
 
 INSERT INTO artists (
+    slug,
     name,
     email,
     instagram_handle,
     city,
     state,
     studio_name,
+    bio_short,
+    specialties,
+    pricing_config,
+    admin_secret,
     status,
     plan,
     is_founding_artist,
@@ -510,12 +520,22 @@ INSERT INTO artists (
     booking_max_days,
     onboarded_at
 ) VALUES (
+    'miguel',
     'Miguel',
     'miguel@placeholder.com',
     'txsmichaell_',
     'Round Rock',
     'TX',
     'Independent',
+    'Black and grey realism specialist based in the Austin, TX area.',
+    ARRAY['realism', 'blackwork', 'portraits'],
+    '{
+        "small": {"min": 100, "max": 300, "deposit": 50},
+        "half_day": {"min": 400, "max": 600, "deposit": 100},
+        "full_day": {"min": 800, "max": 1000, "deposit": 100},
+        "full_sleeve": {"min": 800, "max": 1000, "deposit": 100}
+    }'::jsonb,
+    'm1g',
     'active',
     'pro',
     TRUE,

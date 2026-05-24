@@ -7,8 +7,12 @@
 
 import { useState } from 'react'
 import type { Estimate } from '../App'
+import type { ArtistProfile } from '../types/artist'
+import { artistApiPath } from '../config'
 
 interface Props {
+  artist: ArtistProfile
+  artistSlug: string
   estimate: Estimate
   onReset: () => void
 }
@@ -60,7 +64,8 @@ function offeredDatesExceedTimeframe(dates: string[], preferredTiming: string): 
   return true
 }
 
-export default function EstimateCard({ estimate, onReset }: Props) {
+export default function EstimateCard({ artist, artistSlug, estimate, onReset }: Props) {
+  const artistName = artist.name
   const [screen, setScreen] = useState<Screen>('estimate')
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [needsAlternate, setNeedsAlternate] = useState(false)
@@ -78,7 +83,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
     const dateToSend = needsAlternate ? NEEDS_ALTERNATE : (selectedDate as string)
     setSending(true)
     try {
-      await fetch('https://inkbook-4tlr.onrender.com/api/miguel/confirm-date', {
+      await fetch(artistApiPath(artistSlug, 'confirm-date'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intake_id: estimate.intakeId, selected_date: dateToSend }),
@@ -150,7 +155,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
           textAlign: 'center', lineHeight: 1.6, maxWidth: '300px',
           padding: '0 4px',
         }}>
-          This is an AI-generated estimate. Miguel will confirm the final price and date after reviewing your request.
+          This is an AI-generated estimate. {artistName} will confirm the final price and date after reviewing your request.
         </p>
 
         <button
@@ -235,7 +240,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
           marginBottom: datesExceedWindow ? '16px' : '32px',
           textAlign: 'center', lineHeight: 1.6, maxWidth: '300px',
         }}>
-          These are Miguel's real open dates based on his current calendar.
+          These are {artistName}'s real open dates based on their current calendar.
         </p>
 
         {datesExceedWindow && (
@@ -252,7 +257,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
               marginBottom: '6px', fontWeight: 600,
             }}>Heads Up</p>
             <p style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.6, fontWeight: 300 }}>
-              You requested {preferredLabel}, but these are Miguel's soonest open dates.
+              You requested {preferredLabel}, but these are {artistName}'s soonest open dates.
               Pick the closest one or let him know none work and he'll reach out personally.
             </p>
           </div>
@@ -338,7 +343,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
               color: 'var(--text-muted)', fontSize: '12px',
               lineHeight: 1.6, padding: '0 4px', textAlign: 'center',
             }}>
-              No problem. Miguel will review your request and reach out personally to coordinate a date that works for you.
+              No problem. {artistName} will review your request and reach out personally to coordinate a date that works for you.
             </p>
           )}
         </div>
@@ -412,12 +417,12 @@ export default function EstimateCard({ estimate, onReset }: Props) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
               <ConfirmRow label="Price Range" value={`$${estimate.priceMin}–$${estimate.priceMax}`} gold />
               {needsAlternate
-                ? <ConfirmRow label="Date" value="Awaiting Miguel's outreach" gold />
+                ? <ConfirmRow label="Date" value={`Awaiting ${artistName}'s outreach`} gold />
                 : <ConfirmRow label="Selected Date" value={selectedDate ?? ''} gold />
               }
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: '18px' }}>
                 <p style={{ color: 'var(--text-muted)', fontSize: '11px', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: '8px' }}>
-                  Miguel's Response
+                  {artistName}'s Response
                 </p>
                 <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.7, fontWeight: 300 }}>
                   {estimate.summary}
@@ -431,8 +436,8 @@ export default function EstimateCard({ estimate, onReset }: Props) {
             textAlign: 'center', lineHeight: 1.6, maxWidth: '320px', padding: '0 4px',
           }}>
             {needsAlternate
-              ? "Miguel will review your request and reach out personally to find a date that works for you."
-              : "This sends your request to Miguel for review. He'll confirm the price and lock in your date."}
+              ? `${artistName} will review your request and reach out personally to find a date that works for you.`
+              : `This sends your request to ${artistName} for review. They'll confirm the price and lock in your date.`}
           </p>
 
           <button
@@ -452,7 +457,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
             onMouseEnter={e => { if (!sending) e.currentTarget.style.opacity = '0.85' }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
           >
-            {sending ? 'Sending…' : 'Send to Miguel →'}
+            {sending ? 'Sending…' : `Send to ${artistName} →`}
           </button>
 
           <button
@@ -488,7 +493,7 @@ export default function EstimateCard({ estimate, onReset }: Props) {
           </p>
 
           <p style={{ fontSize: '20px', fontWeight: 300, marginBottom: '12px', lineHeight: 1.4 }}>
-            Miguel has your request.
+            {artistName} has your request.
           </p>
 
           {needsAlternate ? (

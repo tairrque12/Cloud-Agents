@@ -10,7 +10,7 @@ from sqlalchemy import (
     DateTime, Date, Time, Text,
     ForeignKey, ARRAY, func
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.database import Base
 
@@ -36,6 +36,7 @@ class Artist(Base):
         server_default=func.now(),
         onupdate=func.now()
     )
+    slug: Mapped[str] = mapped_column(String(50), unique=True)
     name: Mapped[str] = mapped_column(String(100))
     email: Mapped[str] = mapped_column(String(255), unique=True)
     phone: Mapped[str | None] = mapped_column(String(20))
@@ -43,6 +44,10 @@ class Artist(Base):
     city: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str | None] = mapped_column(String(50))
     studio_name: Mapped[str | None] = mapped_column(String(150))
+    bio_short: Mapped[str | None] = mapped_column(Text)
+    specialties: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    pricing_config: Mapped[dict | None] = mapped_column(JSONB)
+    admin_secret: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="active")
     plan: Mapped[str] = mapped_column(String(20), default="starter")
     is_founding_artist: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -56,6 +61,11 @@ class Artist(Base):
     onboarded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    availability_config: Mapped[dict | None] = mapped_column(JSONB)
+    profile_photo_url: Mapped[str | None] = mapped_column(Text)
+    scheduling_tool: Mapped[str | None] = mapped_column(String(100))
+    scheduling_tool_other: Mapped[str | None] = mapped_column(Text)
+    application_notes: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
     intakes: Mapped[list["Intake"]] = relationship(back_populates="artist")
