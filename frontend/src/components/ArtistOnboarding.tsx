@@ -325,7 +325,6 @@ export default function ArtistOnboarding() {
         name={NETLIFY_FORM_NAME}
         method="POST"
         data-netlify="true"
-        netlify=""
         onSubmit={handleFormSubmit}
         style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}
       >
