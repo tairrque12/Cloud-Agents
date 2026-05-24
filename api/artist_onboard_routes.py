@@ -28,11 +28,8 @@ router = APIRouter(prefix="/api/artists", tags=["artist-onboard"])
 
 
 def _artist_bio(artist: Artist) -> str | None:
-    bio = getattr(artist, "bio", None)
-    if bio and str(bio).strip():
-        return str(bio).strip()
-    if artist.bio_short and artist.bio_short.strip():
-        return artist.bio_short.strip()
+    if artist.bio and str(artist.bio).strip():
+        return str(artist.bio).strip()
     return None
 
 
@@ -51,13 +48,13 @@ async def list_active_artists(db: AsyncSession = Depends(get_db)):
             .options(
                 load_only(
                     Artist.id,
-                    Artist.name,
                     Artist.slug,
+                    Artist.name,
+                    Artist.instagram_handle,
                     Artist.city,
                     Artist.state,
-                    Artist.instagram_handle,
                     Artist.specialties,
-                    Artist.bio_short,
+                    Artist.bio,
                     Artist.status,
                 )
             )
