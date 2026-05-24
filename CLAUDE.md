@@ -279,6 +279,22 @@ Key routing rules:
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 
+## Branch workflow
+
+main is protected. All work goes through feature branches and PRs.
+
+Branch naming: `eng/{ticket-id}-{short-slug}` (e.g. `eng/eng-6-multi-artist`)
+
+Every task:
+1. `git checkout -b eng/{ticket-id}-{short-slug}`
+2. Do the work and commit
+3. `git push -u origin eng/{ticket-id}-{short-slug}`
+4. `gh pr create --base main --title "..." --body "..."`
+5. `gh pr merge --squash --delete-branch` once ready
+
+Never commit directly to main. Never push to main.
+If a direct push is attempted, GitHub will reject it.
+
 ## Health Stack
 
 - typecheck: cd frontend && tsc --noEmit
