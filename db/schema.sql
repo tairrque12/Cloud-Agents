@@ -523,7 +523,7 @@ INSERT INTO artists (
     'miguel',
     'Miguel',
     'miguel@placeholder.com',
-    'txsmichaell_',
+    'miguel_tattoos',
     'Round Rock',
     'TX',
     'Independent',

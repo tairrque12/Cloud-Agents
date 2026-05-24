@@ -1,6 +1,7 @@
 export const MIGUEL_FALLBACK: ArtistProfile = {
   slug: 'miguel',
   name: 'Miguel',
+  instagram_handle: 'miguel_tattoos',
   city: 'Austin',
   state: 'TX',
   location: 'Austin, TX',
