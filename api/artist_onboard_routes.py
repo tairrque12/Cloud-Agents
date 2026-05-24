@@ -1,10 +1,12 @@
 # api/artist_onboard_routes.py
 # New-artist application onboarding only — does not modify Miguel's /api/miguel/* flow.
 
+import logging
 import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -211,8 +213,25 @@ async def create_artist(
         onboarded_at=None,
     )
     db.add(artist)
-    await db.commit()
-    await db.refresh(artist)
+    try:
+        await db.commit()
+        await db.refresh(artist)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="An application with this email or referral code already exists.",
+        )
+    except SQLAlchemyError:
+        await db.rollback()
+        logging.exception("create_artist database error")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Applications are temporarily unavailable while the database is "
+                "being updated. Please try again in a few minutes."
+            ),
+        )
 
     notification_payload = {
         "id": str(artist.id),

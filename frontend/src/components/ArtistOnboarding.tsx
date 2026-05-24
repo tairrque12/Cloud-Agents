@@ -260,7 +260,13 @@ export default function ArtistOnboarding() {
       void (data as CreateArtistResponse)
       setStep('success')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong.')
+      if (err instanceof TypeError) {
+        setError(
+          'Could not reach the application server. If you are testing locally, run the API on port 8000 (uvicorn api.main:app --reload --port 8000) and the frontend from frontend/ (npm run dev). Otherwise wait a minute and try again — the live database may still be updating.'
+        )
+      } else {
+        setError(err instanceof Error ? err.message : 'Something went wrong.')
+      }
     } finally {
       setSubmitting(false)
     }
