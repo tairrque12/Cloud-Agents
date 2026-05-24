@@ -39,6 +39,13 @@ def _artist_specialties(artist: Artist) -> list[str]:
     return []
 
 
+def _public_instagram_handle(artist: Artist) -> str | None:
+    """Canonical handles for directory display (does not change stored DB row)."""
+    if artist.slug == "miguel":
+        return "miguel_tattoos"
+    return artist.instagram_handle
+
+
 @router.get("")
 async def list_active_artists(db: AsyncSession = Depends(get_db)):
     """Public list of active artists for the landing page."""
@@ -77,7 +84,7 @@ async def list_active_artists(db: AsyncSession = Depends(get_db)):
                 "slug": artist.slug,
                 "city": artist.city,
                 "state": artist.state,
-                "instagram_handle": artist.instagram_handle,
+                "instagram_handle": _public_instagram_handle(artist),
                 "specialties": _artist_specialties(artist),
                 "bio": _artist_bio(artist),
             }
